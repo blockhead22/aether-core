@@ -9,7 +9,7 @@ description = "Epistemic governance framework for AI systems — trust-weighted 
 readme = "README.md"
 license = {text = "MIT"}
 authors = [
-    {name = "Nick Block", email = "nick@aeteros.com"},
+    {name = "Nick Block"},
 ]
 requires-python = ">=3.10"
 keywords = ["ai", "governance", "epistemics", "trust", "contradiction", "memory", "belief"]
@@ -34,10 +34,10 @@ all = ["networkx>=3.0", "sentence-transformers>=2.2"]
 dev = ["pytest>=7.0", "pytest-cov>=4.0"]
 
 [project.urls]
-Homepage = "https://github.com/aeteros/crt-core"
-Documentation = "https://github.com/aeteros/crt-core#readme"
-Repository = "https://github.com/aeteros/crt-core"
-Issues = "https://github.com/aeteros/crt-core/issues"
+Homepage = "https://github.com/blockhead22/crt-core"
+Documentation = "https://github.com/blockhead22/crt-core#readme"
+Repository = "https://github.com/blockhead22/crt-core"
+Issues = "https://github.com/blockhead22/crt-core/issues"
 
 [tool.setuptools.packages.find]
 include = ["crt*"]

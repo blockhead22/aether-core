@@ -80,7 +80,7 @@ Auditable gap between what the system believes and what it says. Belief classifi
 
 ## Origin
 
-CRT was built as the epistemic backbone of [Aether](https://aeteros.com), a personal AI assistant. It has been validated against production conversation data (600+ memory nodes, real contradiction cascades, multi-model governance testing across Qwen3, Mistral, DeepSeek, and GPT-4o).
+CRT was built as the epistemic backbone of a personal AI assistant. It has been validated against production conversation data (600+ memory nodes, real contradiction cascades, multi-model governance testing across Qwen3, Mistral, DeepSeek, and GPT-4o).
 
 The governance agents emerged from empirical findings:
 - **Template collapse**: RLHF training collapses moral-domain responses into hedge templates with near-zero variance (Law 2)
@@ -93,4 +93,4 @@ MIT
 
 ## Author
 
-Nick Block / [Aeteros](https://aeteros.com)
+Nick Block
