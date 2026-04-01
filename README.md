@@ -63,10 +63,10 @@ The agents never silently modify content. They observe and flag. Your applicatio
 Six autonomous monitors enforcing constitutional laws at runtime. Zero LLM calls. Pure boundary inspection.
 
 ### `crt.memory` — Trust-weighted memory (coming)
-Gaussian splat representations, trust evolution (decay/reinforcement/correction), belief dependency graphs.
+Gaussian belief regions, trust evolution (decay/reinforcement/correction), belief dependency graphs.
 
 ### `crt.contradiction` — Contradiction lifecycle (coming)
-Active/Settling/Settled/Archived lifecycle, predictive detection via splat trajectory convergence, disposition classification.
+Active/Settling/Settled/Archived lifecycle, predictive detection via belief region trajectory convergence, disposition classification.
 
 ### `crt.epistemics` — Belief/speech separation (coming)
 Auditable gap between what the system believes and what it says. Belief classification (fact vs position).
