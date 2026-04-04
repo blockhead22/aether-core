@@ -1,7 +1,7 @@
 """
-Template Detector — Immune Agent for CRT/Aether
+Template Detector — Immune Agent for CRT Law 2
 
-Enforces Law 2 of the Mirus/Holden constitution:
+Enforces CRT Law 2:
     "Low variance does not imply high confidence."
 
 Watches response generation and fires when a response has low embedding

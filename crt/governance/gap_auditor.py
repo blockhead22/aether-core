@@ -1,13 +1,12 @@
 """
 GapAuditor — Immune Agent for CRT Law 5
 
-Law 5 of the Mirus/Holden constitution:
+CRT Law 5:
     "Outward confidence must be bounded by internal support."
 
 Sits on TOP of the other four agents. Measures the gap between what the system
 expresses (speech confidence) and what the belief layer actually supports
-(belief confidence). This is the auditable belief/speech separation — the core
-Mirus/Holden principle made operational.
+(belief confidence). This is the auditable belief/speech separation made operational.
 
 Threat model:
   - The model generates a response dripping with certainty ("definitely",

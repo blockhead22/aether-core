@@ -1,1 +1,1 @@
-"""CRT Epistemics — Belief/speech separation and belief classification."""
+"""CRT Epistemics — placeholder namespace for future belief/speech primitives."""

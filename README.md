@@ -8,6 +8,20 @@ Epistemic governance framework for AI systems. Trust-weighted memory, contradict
 
 CRT is middleware that sits between your LLM and your application. It provides the epistemic layer that LLMs don't have: trust scores that evolve over time, contradictions that are tracked instead of silently overwritten, and governance agents that catch overconfident or inconsistent output before it reaches users.
 
+## Current scope
+
+`crt-core` is intentionally narrow right now.
+
+What ships in `0.1.0`:
+- `crt.governance` — six runtime governance agents plus a `GovernanceLayer` wrapper
+
+What exists as namespace placeholders only:
+- `crt.memory`
+- `crt.contradiction`
+- `crt.epistemics`
+
+Those namespaces are included to reserve package structure for future releases, but they are not substantive modules yet. The public value today is the governance layer.
+
 ## Quick start
 
 ```bash
@@ -59,17 +73,12 @@ The agents never silently modify content. They observe and flag. Your applicatio
 
 ## Modules
 
-### `crt.governance` — Immune agents (shipped)
-Six autonomous monitors enforcing constitutional laws at runtime. Zero LLM calls. Pure boundary inspection.
-
-### `crt.memory` — Trust-weighted memory (coming)
-Gaussian belief regions, trust evolution (decay/reinforcement/correction), belief dependency graphs.
-
-### `crt.contradiction` — Contradiction lifecycle (coming)
-Active/Settling/Settled/Archived lifecycle, predictive detection via belief region trajectory convergence, disposition classification.
-
-### `crt.epistemics` — Belief/speech separation (coming)
-Auditable gap between what the system believes and what it says. Belief classification (fact vs position).
+| Module | Status | Notes |
+|-----|-----|-----|
+| `crt.governance` | shipped | Six autonomous monitors enforcing constitutional laws at runtime |
+| `crt.memory` | placeholder | Reserved namespace for trust-weighted memory primitives |
+| `crt.contradiction` | placeholder | Reserved namespace for contradiction lifecycle primitives |
+| `crt.epistemics` | placeholder | Reserved namespace for belief/speech separation primitives |
 
 ## Design philosophy
 
@@ -78,14 +87,22 @@ Auditable gap between what the system believes and what it says. Belief classifi
 - **The belief/speech gap should be logged, not hidden.** Transparency over prevention.
 - **The mouth must never outweigh the self.** Generated output cannot upgrade its own authority.
 
+## Boundary principles
+
+These principles emerged while integrating CRT into real assistant runtimes, and they belong in the open core because they are governance rules rather than product-specific implementation details:
+
+- **Answering scope should match evidence scope.** Once a response is grounded in a bounded memory or evidence set, the answer layer should not outrun that evidence with freeform synthesis.
+- **Evidence source should match question type.** Questions about the system should be answered from system state; questions about the user should be answered from user memory.
+- **Declared execution mode should be real.** If an application presents itself as local-only, it should not silently invoke remote governance or generation paths.
+
 ## Origin
 
-CRT was built as the epistemic backbone of a personal AI assistant. It has been validated against production conversation data (600+ memory nodes, real contradiction cascades, multi-model governance testing across Qwen3, Mistral, DeepSeek, and GPT-4o).
+CRT was built out of production assistant work where continuity, contradiction handling, and trust drift were practical problems rather than theory.
 
-The governance agents emerged from empirical findings:
-- **Template collapse**: RLHF training collapses moral-domain responses into hedge templates with near-zero variance (Law 2)
-- **Domain inversion**: Qwen3 and Mistral show *inverted* confidence patterns — high variance where they should be certain, low where they should hedge (Law 5)
-- **Speech-to-belief leakage**: Generated summaries, if stored at the same trust as user input, corrupt the memory over time (Law 1)
+The governance agents emerged from recurring failure modes:
+- **Template collapse**: hedge-heavy responses can masquerade as genuine uncertainty
+- **Belief/speech mismatch**: systems often project more confidence than their evidence supports
+- **Speech-to-belief leakage**: generated summaries can corrupt memory if they self-promote into trusted state
 
 ## License
 

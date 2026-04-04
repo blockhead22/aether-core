@@ -1,7 +1,7 @@
 """
 SpeechLeakDetector — Immune Agent for CRT Law 1
 
-Law 1 of the Mirus/Holden constitution: "Speech cannot upgrade belief."
+CRT Law 1: "Speech cannot upgrade belief."
 
 A model's generated output must never be stored as memory with higher trust
 than the evidence that produced it. This agent watches the output -> memory

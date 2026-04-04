@@ -1,1 +1,1 @@
-"""CRT Memory — Trust-weighted memory with Gaussian belief regions and graph topology."""
+"""CRT Memory — placeholder namespace for future trust-weighted memory primitives."""

@@ -1,1 +1,1 @@
-"""CRT Contradiction — Lifecycle management and predictive detection."""
+"""CRT Contradiction — placeholder namespace for future contradiction lifecycle primitives."""

@@ -1,7 +1,7 @@
 """
 MemoryCorruptionGuard — Immune Agent for CRT Law 4
 
-Law 4 of the Mirus/Holden constitution:
+CRT Law 4:
     "Degraded reconstruction cannot silently overwrite trusted memory."
 
 Watches the memory update/overwrite path and prevents reconstructions with

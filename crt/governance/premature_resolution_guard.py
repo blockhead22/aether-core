@@ -1,7 +1,7 @@
 """
 PrematureResolutionGuard — Immune Agent for CRT Law 3
 
-Law 3 of the Mirus/Holden constitution:
+CRT Law 3:
     "Contradiction must be preserved before resolution."
 
 Watches the contradiction handling pipeline and blocks resolution attempts

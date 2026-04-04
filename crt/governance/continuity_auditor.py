@@ -1,7 +1,7 @@
 """
 ContinuityAuditor -- Immune Agent for CRT Law 6
 
-Law 6 of the Mirus/Holden constitution:
+CRT Law 6:
     "Confidence must not exceed continuity."
 
 Pre-generation gate that checks whether the system has answered a similar
@@ -15,15 +15,8 @@ Threat model:
   - The system has no awareness it answered before
   - Without continuity context, it generates a fresh answer that may
     contradict its prior stance
-  - The user receives conflicting advice from the same "trusted" system
-  - Over time, this erodes trust and constitutes epistemic gaslighting
-
-Empirical basis:
-  - 13-month study of 1,275 conversations (59,370 messages)
-  - Mean cross-thread semantic consistency: 0.34
-  - Continuity awareness: 0.0%  (zero detection across all topics)
-  - Mean confidence in contradictory statements: 74%
-  - Gaslighting risk = confidence * (1 - similarity) * (1 - continuity)
+  - The user receives conflicting advice from the same system identity
+  - Over time, this erodes trust and creates continuity drift
 
 This agent makes continuity visible, measurable, and actionable.
 
