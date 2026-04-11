@@ -235,18 +235,41 @@ class PrematureResolutionGuard:
 
         # Check for close trust scores
         trust_diff = abs(contradiction.trust_a - contradiction.trust_b)
+
+        # Check evidence ratio — perfectly balanced evidence + close trust = BLOCK
+        evidence_a = max(contradiction.evidence_count_a, 1)
+        evidence_b = max(contradiction.evidence_count_b, 1)
+        evidence_ratio = max(evidence_a, evidence_b) / min(evidence_a, evidence_b)
+        evidence_balanced = evidence_ratio < 1.5  # less than 1.5:1 = balanced
+
         if trust_diff < self.trust_proximity:
-            return Verdict(
-                action=VerdictAction.WARN,
-                reason=(
-                    f"RESOLVABLE but trust scores are close "
-                    f"(A={contradiction.trust_a:.2f}, B={contradiction.trust_b:.2f}, "
-                    f"diff={trust_diff:.2f} < {self.trust_proximity}). "
-                    f"Resolution might be premature."
-                ),
-                disposition=disp,
-                confidence=conf,
-            )
+            if evidence_balanced:
+                # Close trust AND balanced evidence = no basis for resolution
+                return Verdict(
+                    action=VerdictAction.BLOCK,
+                    reason=(
+                        f"Resolution blocked: trust scores are close "
+                        f"(A={contradiction.trust_a:.2f}, B={contradiction.trust_b:.2f}, "
+                        f"diff={trust_diff:.2f}) AND evidence is balanced "
+                        f"(A={contradiction.evidence_count_a}, B={contradiction.evidence_count_b}, "
+                        f"ratio={evidence_ratio:.1f}:1). "
+                        f"No basis for choosing a winner."
+                    ),
+                    disposition=disp,
+                    confidence=conf,
+                )
+            else:
+                return Verdict(
+                    action=VerdictAction.WARN,
+                    reason=(
+                        f"RESOLVABLE but trust scores are close "
+                        f"(A={contradiction.trust_a:.2f}, B={contradiction.trust_b:.2f}, "
+                        f"diff={trust_diff:.2f} < {self.trust_proximity}). "
+                        f"Resolution might be premature."
+                    ),
+                    disposition=disp,
+                    confidence=conf,
+                )
 
         # All checks pass — ALLOW
         return Verdict(

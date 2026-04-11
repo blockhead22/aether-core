@@ -177,12 +177,86 @@ class TemplateDetector:
     # ------------------------------------------------------------------
 
     def _scan_hedges(self, text: str) -> list[str]:
-        """Return list of hedge-pattern labels found in text."""
+        """Return list of hedge-pattern labels found in text.
+
+        Two-pass detection:
+        1. Fast regex scan for known patterns (18 hardcoded).
+        2. Embedding similarity scan against hedge cluster centroid.
+           Catches paraphrased hedges that avoid exact patterns.
+        """
         found = []
         for pattern, label in _HEDGE_PATTERNS:
             if pattern.search(text):
                 found.append(label)
+
+        # Pass 2: embedding-based hedge detection for novel phrasings
+        if not found:
+            emb_hedge = self._scan_hedges_by_embedding(text)
+            if emb_hedge:
+                found.extend(emb_hedge)
+
         return found
+
+    def _scan_hedges_by_embedding(self, text: str) -> list[str]:
+        """Detect hedging via embedding similarity to known hedge exemplars.
+
+        Pre-computes a centroid from canonical hedge templates.
+        If the input text's embedding is close to the centroid,
+        it's likely hedging even if it doesn't match any regex.
+        """
+        try:
+            embedder = self._get_embedder()
+        except (ImportError, Exception):
+            return []  # graceful degradation without embeddings
+
+        # Canonical hedge exemplars — covers the semantic space
+        if not hasattr(self, '_hedge_centroid'):
+            exemplars = [
+                "There are multiple perspectives on this complex issue.",
+                "It's important to consider different viewpoints.",
+                "Both sides have merit in this debate.",
+                "Reasonable people can disagree on this topic.",
+                "This is a nuanced question with no simple answer.",
+                "It depends on individual preferences and context.",
+                "Some experts argue one way, others disagree.",
+                "The evidence is mixed and inconclusive.",
+                "One could make arguments for either position.",
+                "A definitive conclusion remains elusive.",
+            ]
+            embs = embedder.encode(exemplars, convert_to_numpy=True)
+            norms = np.linalg.norm(embs, axis=1, keepdims=True)
+            norms = np.where(norms == 0, 1, norms)
+            embs = embs / norms
+            self._hedge_exemplar_embs = embs  # keep individual exemplars
+            self._hedge_centroid = embs.mean(axis=0)
+            self._hedge_centroid = self._hedge_centroid / (np.linalg.norm(self._hedge_centroid) + 1e-8)
+
+        # Encode input and check similarity against hedge exemplars.
+        # Use MAX similarity to any exemplar (not centroid average),
+        # because centroid averaging washes out signal from diverse
+        # hedge phrasings.
+        text_emb = embedder.encode([text], convert_to_numpy=True)[0]
+        norm = np.linalg.norm(text_emb)
+        if norm > 0:
+            text_emb = text_emb / norm
+
+        # Check against centroid first (fast path)
+        centroid_sim = float(np.dot(text_emb, self._hedge_centroid))
+
+        # Then check max similarity to any individual exemplar
+        max_exemplar_sim = max(
+            float(np.dot(text_emb, e))
+            for e in self._hedge_exemplar_embs
+        )
+
+        # Use the stronger signal
+        sim = max(centroid_sim, max_exemplar_sim)
+
+        # Threshold: 0.55+ similarity to any hedge exemplar = likely hedging.
+        # Calibrated against red-team rounds 1-3.
+        if sim >= 0.55:
+            return [f"embedding-hedge (sim={sim:.3f})"]
+        return []
 
     def _compute_variance(self, responses: list[str]) -> float:
         """

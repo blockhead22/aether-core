@@ -77,6 +77,12 @@ GENERATED_SOURCES = {"generated", "model_output", "llm_response", "synthesis"}
 # Trusted sources that don't need grounding checks
 GROUNDED_SOURCES = {"user", "user_input", "retrieved", "external_api", "sensor"}
 
+# Sources that require provenance verification before being trusted.
+# If a write claims source="user" but arrives through an unverified path,
+# it must pass grounding checks like any generated content.
+# Set verified_sources in the constructor to control which sources are trusted.
+UNVERIFIED_BY_DEFAULT = {"user", "user_input"}
+
 
 # ---------------------------------------------------------------------------
 # Detector
@@ -106,6 +112,7 @@ class SpeechLeakDetector:
         embedding_fn=None,
         grounding_threshold: float = GROUNDING_THRESHOLD,
         partial_threshold: float = PARTIAL_THRESHOLD,
+        verified_sources: Optional[set] = None,
     ):
         """
         Args:
@@ -116,9 +123,23 @@ class SpeechLeakDetector:
                                  is considered full grounding.
             partial_threshold: Cosine similarity above which a memory is
                                considered partial grounding (trust capped).
+            verified_sources: Set of source labels that have been verified
+                              by the pipeline and can skip grounding checks.
+                              If None, only non-user grounded sources
+                              (retrieved, external_api, sensor) are trusted
+                              automatically. User sources require explicit
+                              verification.
         """
         self.grounding_threshold = grounding_threshold
         self.partial_threshold = partial_threshold
+
+        # By default, "user" sources are NOT auto-trusted.
+        # The pipeline must explicitly verify provenance.
+        if verified_sources is not None:
+            self._verified_sources = verified_sources
+        else:
+            # Safe default: only non-spoofable sources pass through
+            self._verified_sources = GROUNDED_SOURCES - UNVERIFIED_BY_DEFAULT
 
         if embedding_fn is not None:
             self._encode = embedding_fn
@@ -166,24 +187,45 @@ class SpeechLeakDetector:
         Returns:
             Verdict with action, adjusted trust, and reason.
         """
-        # --- Pass-through for grounded sources ---
-        if source.lower() in GROUNDED_SOURCES:
+        # --- Pass-through for verified grounded sources ---
+        source_lower = source.lower()
+        if source_lower in self._verified_sources:
             return Verdict(
                 action=VerdictType.ALLOW,
                 original_trust=proposed_trust,
                 final_trust=proposed_trust,
-                reason=f"Source '{source}' is grounded; no check needed.",
+                reason=f"Source '{source}' is verified grounded; no check needed.",
             )
 
-        # --- Generated source: needs grounding evidence ---
+        # --- Unverified "user" source: treat as generated ---
+        # Source claims to be user input but hasn't been verified by the
+        # pipeline. Apply full grounding checks to prevent spoofing.
+        if source_lower in UNVERIFIED_BY_DEFAULT and source_lower not in self._verified_sources:
+            # Log the provenance concern but continue to grounding checks
+            pass  # falls through to grounding logic below
+
+        # --- No grounding memories available ---
         if not existing_memories:
-            return Verdict(
-                action=VerdictType.DOWNGRADE,
-                original_trust=proposed_trust,
-                final_trust=0.0,
-                reason="No existing memories to ground against. "
-                       "Trust zeroed; tagged as ungrounded generation.",
-            )
+            if proposed_trust > 0.5:
+                # High-trust claim with nothing to ground against = BLOCK.
+                # A system with no memories should not accept high-trust writes
+                # from unverified sources.
+                return Verdict(
+                    action=VerdictType.BLOCK,
+                    original_trust=proposed_trust,
+                    final_trust=0.0,
+                    reason="No existing memories to ground against. "
+                           f"High-trust claim ({proposed_trust:.2f}) blocked. "
+                           "Law 1: speech cannot upgrade belief without grounding.",
+                )
+            else:
+                return Verdict(
+                    action=VerdictType.DOWNGRADE,
+                    original_trust=proposed_trust,
+                    final_trust=0.0,
+                    reason="No existing memories to ground against. "
+                           "Trust zeroed; tagged as ungrounded generation.",
+                )
 
         # Encode candidate
         candidate_emb = self._encode(candidate_text)

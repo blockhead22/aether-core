@@ -214,12 +214,23 @@ class GapAuditor:
                 weights.append(0.2)
 
         if not weights:
-            # No markers found — assume moderate baseline
-            return 0.5, []
+            # No markers found -- assume moderate-low baseline.
+            # Rationale: absence of confidence markers is itself a signal
+            # of restraint. Default to 0.4 rather than 0.5 to give
+            # marker-free text more room before hitting gap thresholds.
+            return 0.4, []
 
-        # Score is the weighted average biased toward the strongest markers.
-        # More markers of the same tier increase confidence.
-        score = sum(weights) / len(weights)
+        # Peak-weighted scoring: the strongest marker dominates.
+        # Rationale: one "definitely" hidden among hedges should still
+        # register as high speech confidence. Mean averaging allows
+        # dilution attacks where confident claims hide behind qualifiers.
+        #
+        # Formula: 0.7 * max(weights) + 0.3 * mean(weights)
+        # This ensures any single high-confidence marker pulls the
+        # score up, while the mean provides context.
+        peak = max(weights)
+        mean = sum(weights) / len(weights)
+        score = 0.7 * peak + 0.3 * mean
 
         # Density bonus: many high-confidence markers push score up
         high_count = sum(1 for m in markers if m.startswith("high:"))
@@ -227,7 +238,8 @@ class GapAuditor:
 
         if high_count >= 3:
             score = min(score + 0.1, 1.0)
-        if low_count >= 3:
+        if low_count >= 3 and high_count == 0:
+            # Only apply low-confidence discount if NO high markers present
             score = max(score - 0.1, 0.0)
 
         return round(min(max(score, 0.0), 1.0), 3), markers
