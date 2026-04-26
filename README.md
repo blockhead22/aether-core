@@ -1,6 +1,6 @@
 # Aether: A Belief Substrate for AI Systems
 
-[![PyPI](https://img.shields.io/pypi/v/aether-core.svg)](https://pypi.org/project/aether-core/)
+[![PyPI](https://img.shields.io/pypi/v/aether-core?cacheSeconds=300)](https://pypi.org/project/aether-core/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
 [![Tests](https://github.com/blockhead22/aether-core/actions/workflows/tests.yml/badge.svg)](https://github.com/blockhead22/aether-core/actions/workflows/tests.yml)
