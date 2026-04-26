@@ -7,7 +7,7 @@
 
 > The model is the mouth. The substrate is the self.
 
-Aether is a small library that gives an LLM agent a persistent belief state. Trust scores that evolve when the user corrects you. Contradictions that get tracked instead of being silently overwritten. A dependency graph of which beliefs rest on which others, so a correction in one place can ripple through the rest. The point is that this state lives outside the model, so when you swap LLMs it doesn't reset.
+Aether is a small library that gives an LLM agent a persistent belief state. Trust scores that move when the user corrects a fact. Contradictions that get tracked instead of being silently overwritten. A dependency graph of which beliefs rest on which others, so a correction in one place can ripple through the rest. The point is that this state lives outside the model, so when you swap LLMs it doesn't reset.
 
 ## Why a belief layer, not just a memory layer
 
