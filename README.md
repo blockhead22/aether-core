@@ -1,5 +1,10 @@
 # Aether — A Belief Substrate for AI Systems
 
+[![PyPI](https://img.shields.io/pypi/v/aether-core.svg)](https://pypi.org/project/aether-core/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://www.python.org/downloads/)
+[![Tests](https://github.com/blockhead22/aether-core/actions/workflows/tests.yml/badge.svg)](https://github.com/blockhead22/aether-core/actions/workflows/tests.yml)
+
 > The model is the mouth. The substrate is the self.
 
 Aether is a runtime belief substrate: persistent, contradiction-aware trust state that survives across model swaps, vendor changes, and session boundaries. It sits between your application and any LLM and provides the epistemic layer LLMs don't have on their own — trust scores that evolve under correction, contradictions tracked rather than silently overwritten, cascade pressure measured as a first-class signal, and governance gates that act on belief state instead of output strings.
@@ -31,6 +36,21 @@ pip install aether-core[graph]   # networkx for memory and dependency graphs
 pip install aether-core[ml]      # sentence-transformers for embeddings
 pip install aether-core[all]     # everything
 ```
+
+### Open-core declaration
+
+`aether-core` is MIT-licensed and free, permanently. Every primitive in this repo — the 6 immune agents, the structural tension meter, the belief-backpropagation engine, the BDG with cascade pressure — stays open under MIT. The hosted Aether substrate (cross-session belief state, sanction governance API, audit dashboards, multi-user) is the paid product. The split is permanent and never moves backward.
+
+### 60-second demo
+
+```bash
+git clone https://github.com/blockhead22/aether-core.git
+cd aether-core
+pip install -e .
+python examples/01_quickstart.py
+```
+
+See [`examples/`](examples/) for two runnable scripts (no API keys, no network).
 
 ## The four pillars
 
