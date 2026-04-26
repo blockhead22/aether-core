@@ -44,6 +44,9 @@ from .graph import (
     BeliefDependencyGraph,
 )
 
+# Re-exported for convenience: iterate every MemoryNode in a graph
+# (useful for search and export).
+
 __all__ = [
     # Slots
     "ExtractedFact",

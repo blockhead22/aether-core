@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aether-core"
-version = "0.3.1"
+version = "0.4.0"
 description = "Belief substrate for AI systems — persistent, contradiction-aware trust state that outlives any single model. The model is the mouth, the substrate is the self."
 readme = "README.md"
 license = {text = "MIT"}
@@ -30,8 +30,12 @@ dependencies = [
 [project.optional-dependencies]
 graph = ["networkx>=3.0"]
 ml = ["sentence-transformers>=2.2"]
-all = ["networkx>=3.0", "sentence-transformers>=2.2"]
+mcp = ["mcp>=1.0"]
+all = ["networkx>=3.0", "sentence-transformers>=2.2", "mcp>=1.0"]
 dev = ["pytest>=7.0", "pytest-cov>=4.0"]
+
+[project.scripts]
+aether-mcp = "aether.mcp.server:run"
 
 [project.urls]
 Homepage = "https://github.com/blockhead22/aether-core"

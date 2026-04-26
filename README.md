@@ -52,6 +52,29 @@ python examples/01_quickstart.py
 
 There are two example scripts in [`examples/`](examples/). Both run offline, no API keys.
 
+### Plug into Claude Code (or any MCP client)
+
+`aether-core` ships an MCP server. Install with the `mcp` extra and point your AI shell at it:
+
+```bash
+pip install "aether-core[mcp,graph]"
+```
+
+Add to `.claude/settings.json` (or your project's `.claude/settings.json`):
+
+```json
+{
+  "mcpServers": {
+    "aether": {
+      "command": "python",
+      "args": ["-m", "aether.mcp"]
+    }
+  }
+}
+```
+
+Restart Claude Code. The model now has tools: `aether_remember`, `aether_search`, `aether_sanction`, `aether_fidelity`, `aether_context`. State persists across sessions in `~/.aether/mcp_state.json` (override with `AETHER_STATE_PATH`). Same config works for Cursor, Cline, Continue, Goose, Zed, LM Studio, or any MCP-speaking client.
+
 ## What's in the box
 
 ### 1. Governance: catch overconfidence at the boundary
@@ -172,7 +195,7 @@ if result.should_block:
 | `aether.contradiction` | shipped | Structural tension. Zero model calls. |
 | `aether.epistemics` | shipped | Belief backpropagation, trust evolution |
 | `aether.memory` | shipped | Slots, memory graph, BDG with cascade pressure |
-| `aether.mcp` | planned | MCP server exposing `aether_sanction`, `aether_lineage`, `aether_cascade_preview`, `aether_fidelity`, `aether_done_check` |
+| `aether.mcp` | shipped (v0.4.0) | MCP server exposing `aether_remember`, `aether_search`, `aether_sanction`, `aether_fidelity`, `aether_context`. Persists state to disk. |
 | `aether.adapters` | planned | Cross-vendor adapters so the substrate stays the same regardless of which LLM is the mouth |
 
 See [ROADMAP.md](ROADMAP.md) for what's coming and what's intentionally out of scope.

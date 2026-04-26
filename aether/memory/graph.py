@@ -152,6 +152,18 @@ class MemoryGraph:
         data = dict(self.graph.nodes[memory_id])
         return MemoryNode.from_dict(data)
 
+    def all_memories(self):
+        """Iterate every MemoryNode in the graph.
+
+        Yields nodes in insertion order. Useful for full scans
+        (search, export, MCP-style iteration).
+        """
+        for memory_id in self.graph.nodes():
+            data = dict(self.graph.nodes[memory_id])
+            if not data:
+                continue
+            yield MemoryNode.from_dict(data)
+
     def get_embedding(self, memory_id: str):
         """Get the embedding for a memory."""
         return self._embeddings.get(memory_id)
@@ -379,13 +391,19 @@ class MemoryGraph:
                                **{k: v for k, v in self._embeddings.items()})
 
     def load(self, path: Optional[str] = None):
-        """Load graph from JSON."""
+        """Load graph from JSON. Empty or missing files are treated as no-op."""
         path = path or self.persist_path
         if not path or not os.path.exists(path):
             return
+        if os.path.getsize(path) == 0:
+            return
 
-        with open(path) as f:
-            data = json.load(f)
+        try:
+            with open(path) as f:
+                data = json.load(f)
+        except (json.JSONDecodeError, OSError):
+            # Corrupt or unreadable state file -- start fresh rather than crash.
+            return
 
         self.graph = nx.DiGraph()
         for node in data.get("nodes", []):

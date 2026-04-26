@@ -2,25 +2,25 @@
 
 What is shipped today, what is coming next, and what is intentionally not in this repo.
 
-## Shipped (v0.3.0)
+## Shipped (v0.4.0)
 
 - `aether.governance`. Six immune agents and the four-tier `GovernanceLayer` dispatcher.
 - `aether.contradiction`. The `StructuralTensionMeter`. Zero-LLM tension detection between two beliefs at about 0.2 seconds per pair.
 - `aether.epistemics`. `EpistemicLoss`, belief backpropagation, `DomainVolatility`.
 - `aether.memory`. Fact slot extraction, `MemoryGraph`, and a `BeliefDependencyGraph` that propagates cascades with measurable pressure (`propagate_cascade`, `propagate_backward`, held-node firewalling).
-- 89 tests, GitHub Actions CI, MIT license, Python 3.10 and up.
+- `aether.mcp`. Standalone MCP server exposing the substrate to Claude Code, Cursor, Cline, Continue, Goose, Zed, LM Studio, or anything that speaks MCP. Tools: `aether_remember`, `aether_search`, `aether_sanction`, `aether_fidelity`, `aether_context`. Runs in-process. Persists state to JSON.
+- PyPI release with auto-publish via Trusted Publishers (OIDC).
+- 97 tests, GitHub Actions CI, MIT license, Python 3.10 and up.
 
 ## Near term (next one or two minor releases)
 
-PyPI publish. The package builds clean and `twine check` passes; the upload itself is pending. Once it lands, `pip install aether-core` works end to end.
+More MCP tools. The current set is the minimum viable loop. The differentiator tools that already work in the private codebase still need extraction:
 
-`aether.mcp`. An MCP server exposing the differentiator tools as primitives any AI engineer can wire into Claude Desktop or Cursor:
-
-- `aether_sanction`. A pre-action governance gate that returns APPROVE / HOLD / REJECT based on belief state and cascade pressure.
 - `aether_lineage`. Answers "why do I believe this" by walking BDG edges.
 - `aether_cascade_preview`. Dry-runs a trust change so you can see the blast radius before committing.
-- `aether_fidelity`. Grades a draft response against the current belief state.
+- `aether_correct`. Triggers belief backprop through dependent memories on correction.
 - `aether_done_check`. Grades a response against declared success criteria.
+- `aether_session_diff`. Briefs a returning session on what changed.
 
 Variance probe. Per-model fragility characterization. Same prompt, several LLMs, measure where the belief/speech gap diverges. Useful both as a diagnostic and as evidence that the substrate is what gives you portability.
 
