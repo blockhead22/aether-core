@@ -75,6 +75,14 @@ Add to `.claude/settings.json` (or your project's `.claude/settings.json`):
 
 Restart Claude Code. The model now has tools: `aether_remember`, `aether_search`, `aether_sanction`, `aether_fidelity`, `aether_context`. State persists across sessions in `~/.aether/mcp_state.json` (override with `AETHER_STATE_PATH`). Same config works for Cursor, Cline, Continue, Goose, Zed, LM Studio, or any MCP-speaking client.
 
+### Have your AI install it for you
+
+Tell your AI assistant:
+
+> Install `aether-core` for me by following https://github.com/blockhead22/aether-core/blob/master/AGENTS.md.
+
+[`AGENTS.md`](AGENTS.md) is a step-by-step install guide written for an AI agent to read and execute. It handles the package install, MCP configuration, verification, and OS-specific quirks. Works in any AI client that can run shell commands and edit files.
+
 ## What's in the box
 
 ### 1. Governance: catch overconfidence at the boundary
