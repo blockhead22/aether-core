@@ -1,6 +1,6 @@
-"""Tests for the CRT governance layer."""
+"""Tests for the Aether governance layer."""
 
-from crt.governance import (
+from aether.governance import (
     GovernanceLayer,
     GovernanceTier,
     TemplateDetector,

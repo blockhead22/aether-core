@@ -1,7 +1,7 @@
-"""Structural Tension Meter: Zero-LLM belief verification for crt-core.
+"""Structural Tension Meter: Zero-LLM belief verification for Aether.
 
 Measures the tension between two memories using only structural signals:
-- Slot extraction (via crt.memory.slots)
+- Slot extraction (via aether.memory.slots)
 - Embedding similarity (via injected encoder)
 - Metadata comparison (trust, recency, source type)
 - Temporal status (past/active/future/potential)
@@ -175,7 +175,7 @@ class StructuralTensionMeter:
                      method. If None, _encode() returns np.array([]) as a
                      graceful fallback (no lazy import).
             slot_extractor: Optional callable(text) -> Dict of extracted slots.
-                           If None, uses crt.memory.slots extractors.
+                           If None, uses aether.memory.slots extractors.
         """
         self._encoder = encoder
         self._slot_extractor = slot_extractor
@@ -379,7 +379,7 @@ class StructuralTensionMeter:
     def _extract_slots(self, text: str) -> Dict:
         """Extract fact slots from memory text.
 
-        Tries the injected slot_extractor first, then crt.memory.slots extractors.
+        Tries the injected slot_extractor first, then aether.memory.slots extractors.
         Falls back to lightweight regex patterns for third-person memory format
         like "Nick lives in X".
         """
@@ -394,13 +394,13 @@ class StructuralTensionMeter:
             if slots:
                 return slots
 
-        # Try crt.memory.slots extractors
+        # Try aether.memory.slots extractors
         try:
-            from crt.memory.slots import extract_fact_slots_contextual
+            from aether.memory.slots import extract_fact_slots_contextual
             slots = extract_fact_slots_contextual(text) or {}
         except Exception:
             try:
-                from crt.memory.slots import extract_fact_slots
+                from aether.memory.slots import extract_fact_slots
                 slots = extract_fact_slots(text) or {}
             except Exception:
                 pass

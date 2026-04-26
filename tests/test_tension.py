@@ -1,8 +1,8 @@
-"""Tests for crt.contradiction — structural tension meter."""
+"""Tests for aether.contradiction — structural tension meter."""
 
 import numpy as np
 
-from crt.contradiction import (
+from aether.contradiction import (
     StructuralTensionMeter,
     TensionRelationship,
     TensionAction,

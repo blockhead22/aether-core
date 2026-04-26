@@ -1,4 +1,4 @@
-"""Tests for crt.memory.graph — memory graph and BDG."""
+"""Tests for aether.memory.graph — memory graph and BDG."""
 
 import json
 import os
@@ -7,7 +7,7 @@ import time
 
 import pytest
 
-from crt.memory.graph import (
+from aether.memory.graph import (
     MemoryType,
     BelnapState,
     EdgeType,

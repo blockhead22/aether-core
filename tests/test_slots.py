@@ -1,6 +1,6 @@
-"""Tests for crt.memory.slots — fact slot extraction."""
+"""Tests for aether.memory.slots — fact slot extraction."""
 
-from crt.memory.slots import (
+from aether.memory.slots import (
     ExtractedFact,
     TemporalStatus,
     extract_fact_slots,

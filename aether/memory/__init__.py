@@ -1,17 +1,17 @@
-"""CRT Memory -- Trust-weighted memory primitives.
+"""Aether Memory -- Trust-weighted memory primitives.
 
 Fact slot extraction, memory graphs with typed edges, and belief
 dependency graphs for cascade analysis.
 
 Slot extraction (pure regex, no ML):
-    from crt.memory import extract_fact_slots, ExtractedFact
+    from aether.memory import extract_fact_slots, ExtractedFact
 
     facts = extract_fact_slots("I live in Seattle and work at Microsoft")
     print(facts["location"].value)   # "Seattle"
     print(facts["employer"].value)   # "Microsoft"
 
 Memory graph (requires networkx):
-    from crt.memory import MemoryGraph, MemoryNode, EdgeType
+    from aether.memory import MemoryGraph, MemoryNode, EdgeType
 
     graph = MemoryGraph()
     graph.add_memory(MemoryNode(memory_id="m1", text="User lives in Seattle", ...))

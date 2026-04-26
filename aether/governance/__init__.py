@@ -1,4 +1,4 @@
-"""CRT Governance — Immune agents enforcing constitutional laws at runtime.
+"""Aether Governance — Immune agents enforcing constitutional laws at runtime.
 
 Six autonomous monitors that inspect inputs and outputs at pipeline boundaries.
 They never touch pipeline internals — they observe and intervene at boundaries.
@@ -12,7 +12,7 @@ Agents:
     ContinuityAuditor         — Law 6: Confidence must not exceed continuity
 
 Usage:
-    from crt.governance import GovernanceLayer, GovernanceTier
+    from aether.governance import GovernanceLayer, GovernanceTier
 
     gov = GovernanceLayer()
     result = gov.govern_response("The answer is definitely X", belief_confidence=0.3)

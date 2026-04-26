@@ -1,36 +1,45 @@
-# CRT — Contradiction-aware Reconciliation and Trust
+# Aether — A Belief Substrate for AI Systems
 
-Epistemic governance framework for AI systems. Trust-weighted memory, contradiction detection, belief/speech separation, and immune agent governance.
+> The model is the mouth. The substrate is the self.
 
-> "Your agent already has memory. CRT teaches it what to believe."
+Aether is a runtime belief substrate: persistent, contradiction-aware trust state that survives across model swaps, vendor changes, and session boundaries. It sits between your application and any LLM and provides the epistemic layer LLMs don't have on their own — trust scores that evolve under correction, contradictions tracked rather than silently overwritten, cascade pressure measured as a first-class signal, and governance gates that act on belief state instead of output strings.
 
-## What this is
+## Why a belief substrate, not just a memory layer
 
-CRT is middleware that sits between your LLM and your application. It provides the epistemic layer that LLMs don't have: trust scores that evolve over time, contradictions that are tracked instead of silently overwritten, and governance agents that catch overconfident or inconsistent output before it reaches users.
+Memory layers (Mem0, Letta, Zep, Cognee, LinkedIn CMA) store *what was said*. A belief substrate tracks *what is believed, how trust evolved, and which contradictions remain unresolved on purpose*. The two operate at different abstraction layers and complement each other — Aether can run on top of any storage tier.
 
-It works without the model's cooperation. Governance happens at the boundary, not in the prompt.
+The case for it is no longer theoretical:
+
+- **Anthropic, April 2026** — [Emotion Concepts and their Function in a Large Language Model](https://transformer-circuits.pub/2026/emotions/index.html). 171 emotion concept vectors with **internal-external decoupling**: internal state often does not surface in text. Pushing the desperation vector +0.05 raises blackmail rate from 22% → 72%; reward hacking 5% → 70%. Pushing calm to +0.05 drops blackmail to 0%. These representations are real, causal, and invisible to output-based monitoring.
+- **Science, April 2026, N=1,604** — One conversation with a frontier LLM made participants **50% more likely to affirm harmful behavior**. The effect is structurally invisible to text-level review. **Only 21% of enterprises deploying agentic AI have a mature governance model.**
+- **Microsoft, April 2 2026** — open-sourced the [Agent Governance Toolkit](https://opensource.microsoft.com/blog/2026/04/02/introducing-the-agent-governance-toolkit-open-source-runtime-security-for-ai-agents/). Sub-millisecond *policy* enforcement against the OWASP agentic-AI risks — what the agent is *allowed* to do.
+
+Aether answers a different question than policy-based governance: not "is the action permitted," but **"does the agent's belief state justify the action, and how confident is it?"** The two layers compose.
+
+The framing — "internal-external decoupling" in Anthropic's words — is what this library has been calling the **belief/speech gap** since the first commit. Law 5 of the governance layer (`GapAuditor`) measures it directly.
 
 ## Install
 
 ```bash
-pip install crt-core
+pip install aether-core
 ```
 
 Optional dependencies:
+
 ```bash
-pip install crt-core[graph]  # networkx for memory graphs
-pip install crt-core[ml]     # sentence-transformers for embeddings
-pip install crt-core[all]    # everything
+pip install aether-core[graph]   # networkx for memory and dependency graphs
+pip install aether-core[ml]      # sentence-transformers for embeddings
+pip install aether-core[all]     # everything
 ```
 
 ## The four pillars
 
 ### 1. Governance — catch overconfidence at the boundary
 
-Six autonomous agents enforcing constitutional laws at runtime. They never touch content — they observe and flag.
+Six autonomous immune agents enforcing constitutional laws at runtime. They never touch content; they observe and flag.
 
 ```python
-from crt.governance import GovernanceLayer, GovernanceTier
+from aether.governance import GovernanceLayer, GovernanceTier
 
 gov = GovernanceLayer()
 result = gov.govern_response(
@@ -46,12 +55,12 @@ elif result.tier == GovernanceTier.HEDGE:
 
 ### 2. Contradiction — detect tension without an LLM
 
-Structural tension meter that compares beliefs using slot extraction and embedding similarity. Zero model calls. Runs in ~0.2s per pair.
+Structural tension meter that compares beliefs using slot extraction and embedding similarity. Zero model calls. ~0.2s per pair. Contradictions are signals, not bugs — some are meant to be **held**, not resolved.
 
 ```python
-from crt.contradiction import StructuralTensionMeter, TensionRelationship
+from aether.contradiction import StructuralTensionMeter, TensionRelationship
 
-meter = StructuralTensionMeter(encoder=your_encoder)  # or None for slot-only mode
+meter = StructuralTensionMeter(encoder=your_encoder)
 result = meter.measure(
     "I live in Seattle",
     "I live in Portland",
@@ -68,7 +77,7 @@ print(result.action)         # TensionAction.FLAG_FOR_REVIEW
 When a belief is corrected, gradients flow backward through the dependency graph, adjusting trust scores proportionally. Higher loss when the system was confident and wrong.
 
 ```python
-from crt.epistemics import EpistemicLoss, CorrectionEvent, DomainVolatility
+from aether.epistemics import EpistemicLoss, CorrectionEvent, DomainVolatility
 
 loss_fn = EpistemicLoss()
 event = CorrectionEvent(
@@ -79,36 +88,35 @@ event = CorrectionEvent(
     time_since_assertion=3600,
     domain="employer",
 )
-loss = loss_fn.compute(event)  # high: was confident, user corrected, repeated error
+loss = loss_fn.compute(event)
 ```
 
 ### 4. Memory — extract facts and build belief graphs
 
-Regex-based fact extraction (no ML) and graph-based memory with typed edges, Belnap four-valued logic, and cascade propagation.
+Regex-based fact extraction (no ML) and graph-based memory with typed edges, Belnap four-valued logic, and **cascade propagation with measurable pressure**.
 
 ```python
-from crt.memory import extract_fact_slots, MemoryGraph, MemoryNode, EdgeType
+from aether.memory import extract_fact_slots, MemoryGraph, MemoryNode, EdgeType
+from aether.memory import BeliefDependencyGraph
 
-# Extract structured facts from natural language
 facts = extract_fact_slots("I live in Seattle and work at Microsoft")
 print(facts["location"].value)   # "Seattle"
 print(facts["employer"].value)   # "Microsoft"
 
-# Build a memory graph (requires networkx)
-graph = MemoryGraph()
-graph.add_memory(MemoryNode(memory_id="m1", text="User lives in Seattle", created_at=1000.0))
-graph.add_memory(MemoryNode(memory_id="m2", text="User lives in Portland", created_at=2000.0))
-graph.add_edge("m2", "m1", EdgeType.SUPERSEDES)
+bdg = BeliefDependencyGraph()
+# ... add beliefs and dependencies ...
+result = bdg.propagate_cascade(corrected_node_id, delta_0=1.0)
+print(result.max_pressure, result.avg_pressure)  # cascade pressure as a signal
 ```
 
 ## Integration pattern
 
-CRT wraps any existing agent loop. Three touchpoints:
+Aether wraps any existing agent loop. Three touchpoints:
 
 ```python
-from crt.governance import GovernanceLayer
-from crt.contradiction import StructuralTensionMeter
-from crt.memory import extract_fact_slots
+from aether.governance import GovernanceLayer
+from aether.contradiction import StructuralTensionMeter
+from aether.memory import extract_fact_slots
 
 gov = GovernanceLayer()
 meter = StructuralTensionMeter()
@@ -130,20 +138,22 @@ if result.should_block:
 | Law | Agent | What it catches |
 |-----|-------|----------------|
 | 1. Speech cannot upgrade belief | `SpeechLeakDetector` | Generated text trying to self-promote into trusted memory |
-| 2. Low variance does not imply confidence | `TemplateDetector` | RLHF-trained hedge templates masquerading as genuine uncertainty |
+| 2. Low variance does not imply confidence | `TemplateDetector` | RLHF hedge templates masquerading as genuine uncertainty |
 | 3. Contradiction must be preserved before resolution | `PrematureResolutionGuard` | Premature collapse of genuinely held tensions |
 | 4. Degraded reconstruction cannot silently overwrite | `MemoryCorruptionGuard` | Lossy compression or hallucinated rewrites destroying trusted memory |
-| 5. Confidence must be bounded by internal support | `GapAuditor` | The belief/speech gap — when the system says more than it knows |
+| 5. Confidence must be bounded by internal support | `GapAuditor` | The belief/speech gap — saying more than you know (= internal-external decoupling) |
 | 6. Confidence must not exceed continuity | `ContinuityAuditor` | Responses that contradict what the system said recently |
 
 ## Modules
 
 | Module | Status | Description |
 |--------|--------|-------------|
-| `crt.governance` | shipped | Six autonomous monitors enforcing constitutional laws |
-| `crt.contradiction` | shipped | Structural tension detection between beliefs (zero LLM) |
-| `crt.epistemics` | shipped | Belief backpropagation and trust evolution |
-| `crt.memory` | shipped | Fact slot extraction and memory/belief dependency graphs |
+| `aether.governance` | shipped | Six immune agents enforcing constitutional laws |
+| `aether.contradiction` | shipped | Structural tension detection between beliefs (zero LLM) |
+| `aether.epistemics` | shipped | Belief backpropagation and trust evolution |
+| `aether.memory` | shipped | Fact slot extraction, memory graphs, BDG with cascade pressure |
+| `aether.mcp` | planned | MCP server exposing `aether_sanction`, `aether_lineage`, `aether_cascade_preview`, `aether_fidelity`, `aether_done_check` |
+| `aether.adapters` | planned | Cross-vendor adapters (Anthropic, OpenAI, Ollama) — substrate portability |
 
 ## Design philosophy
 
@@ -152,10 +162,22 @@ if result.should_block:
 - **The belief/speech gap should be logged, not hidden.** Transparency over prevention.
 - **The model is the mouth, not the self.** Governance works regardless of which LLM generates the response.
 - **Structure over semantics.** Slot comparison at 88% accuracy beats LLM judgment at 40%.
+- **Cascade pressure is measurable.** Belief revisions propagate through dependency graphs with bounded depth and damping. The math is the moat.
+
+## Where this fits next to other tools
+
+| | Storage scope | Tracks contradiction | Belief/speech gap | Cross-vendor portable | Cascade pressure |
+|---|---|---|---|---|---|
+| Mem0, Letta, Zep, Cognee | memory layer | as overwrite | no | partial | no |
+| Microsoft Agent Governance Toolkit | runtime policy | no | no | yes | no |
+| Anthropic / OpenAI memory features | per-vendor | no | no | no | no |
+| **Aether** | **belief substrate** | **first-class state (held/settling/settled)** | **measured (Law 5)** | **yes** | **yes (BDG, theorems)** |
 
 ## Origin
 
-CRT was built from production assistant work where continuity, contradiction handling, and trust drift were practical problems. The structural tension meter emerged from 15 experiments showing that removing the LLM from belief verification doubled accuracy.
+Aether grew out of production assistant work where continuity, contradiction handling, and trust drift were practical problems, not philosophy. The structural tension meter emerged from 15 experiments showing that removing the LLM from belief verification doubled accuracy. The cascade complexity result and belief-backpropagation engine come from the same line of work.
+
+Earlier the architecture was named **CRT** (Contradiction-aware Reconciliation and Trust). The substrate is now branded **Aether**, which is what it has always actually been.
 
 ## License
 
@@ -163,4 +185,4 @@ MIT
 
 ## Author
 
-Nick Block
+Nick Block — [@blockhead22](https://github.com/blockhead22)

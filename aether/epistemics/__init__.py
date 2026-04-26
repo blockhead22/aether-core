@@ -1,11 +1,11 @@
-"""CRT Epistemics -- Belief evolution and trust dynamics.
+"""Aether Epistemics -- Belief evolution and trust dynamics.
 
 Error-driven trust evolution through belief backpropagation.
 When a belief is corrected, gradients flow backward through the
 dependency graph, adjusting trust scores proportionally.
 
 Usage:
-    from crt.epistemics import EpistemicLoss, CorrectionEvent, DomainVolatility
+    from aether.epistemics import EpistemicLoss, CorrectionEvent, DomainVolatility
 
     loss_fn = EpistemicLoss()
     event = CorrectionEvent(

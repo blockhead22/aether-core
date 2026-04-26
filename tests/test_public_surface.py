@@ -1,15 +1,15 @@
 """Tests for the public package surface — all namespaces export real classes."""
 
-import crt
-from crt import contradiction, epistemics, governance, memory
-from crt.governance import GovernanceLayer, GovernanceTier
-from crt.contradiction import StructuralTensionMeter, TensionRelationship
-from crt.epistemics import EpistemicLoss, CorrectionEvent, DomainVolatility
-from crt.memory import extract_fact_slots, ExtractedFact, MemoryNode, BeliefDependencyGraph
+import aether
+from aether import contradiction, epistemics, governance, memory
+from aether.governance import GovernanceLayer, GovernanceTier
+from aether.contradiction import StructuralTensionMeter, TensionRelationship
+from aether.epistemics import EpistemicLoss, CorrectionEvent, DomainVolatility
+from aether.memory import extract_fact_slots, ExtractedFact, MemoryNode, BeliefDependencyGraph
 
 
 def test_package_version():
-    assert crt.__version__ == "0.2.0"
+    assert aether.__version__ == "0.3.0"
 
 
 def test_all_namespaces_have_real_exports():

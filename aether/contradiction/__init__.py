@@ -1,10 +1,10 @@
-"""CRT Contradiction -- Structural tension detection and contradiction lifecycle.
+"""Aether Contradiction -- Structural tension detection and contradiction lifecycle.
 
 Measures tension between beliefs using structural signals (slot extraction,
 embedding similarity, metadata comparison) without LLM calls.
 
 Usage:
-    from crt.contradiction import StructuralTensionMeter, TensionRelationship
+    from aether.contradiction import StructuralTensionMeter, TensionRelationship
 
     meter = StructuralTensionMeter(encoder=my_encoder)
     result = meter.measure("I live in Seattle", "I live in Portland")

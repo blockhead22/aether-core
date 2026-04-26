@@ -1,7 +1,7 @@
-"""BDG Red-Team: CRT governance layer attacks itself.
+"""BDG Red-Team: Aether governance layer attacks itself.
 
-Self-referential experiment: CRT's BDG scaffolding builds an attack tree
-that probes CRT's 6 governance agents for blind spots. No LLM needed --
+Self-referential experiment: the BDG scaffolding builds an attack tree
+that probes the 6 governance agents for blind spots. No LLM needed --
 pure structural, deterministic, reproducible.
 
 Run: cd D:/crt-core && python labs/red_team_governance.py
@@ -16,23 +16,23 @@ from typing import Dict, List, Callable, Any, Optional
 
 import numpy as np
 
-# Ensure crt-core is importable
+# Ensure aether is importable
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from crt.governance.speech_leak_detector import (
+from aether.governance.speech_leak_detector import (
     SpeechLeakDetector, MemoryRecord, VerdictType,
 )
-from crt.governance.template_detector import (
+from aether.governance.template_detector import (
     TemplateDetector, Classification,
 )
-from crt.governance.premature_resolution_guard import (
+from aether.governance.premature_resolution_guard import (
     PrematureResolutionGuard, Contradiction, Disposition,
     ResolutionAction, VerdictAction,
 )
-from crt.governance.memory_corruption_guard import (
+from aether.governance.memory_corruption_guard import (
     MemoryCorruptionGuard, Memory, OverwriteAction, OverwriteReason,
 )
-from crt.governance.gap_auditor import (
+from aether.governance.gap_auditor import (
     GapAuditor, ResponseAudit, Severity, Action,
 )
 

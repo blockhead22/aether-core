@@ -1,7 +1,7 @@
-"""Tests for crt.epistemics — belief backpropagation engine."""
+"""Tests for aether.epistemics — belief backpropagation engine."""
 
 import time
-from crt.epistemics import (
+from aether.epistemics import (
     EpistemicLoss,
     CorrectionEvent,
     BackpropResult,
