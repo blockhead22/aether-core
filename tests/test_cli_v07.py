@@ -13,6 +13,19 @@ from pathlib import Path
 
 import pytest
 
+# Tests that build a real StateStore need networkx for MemoryGraph.
+# Mark them so they skip cleanly when the [graph] extra isn't installed.
+try:
+    import networkx  # noqa: F401
+    _HAS_NETWORKX = True
+except ImportError:
+    _HAS_NETWORKX = False
+
+needs_networkx = pytest.mark.skipif(
+    not _HAS_NETWORKX,
+    reason="networkx required (install [graph] extra)",
+)
+
 from aether.mcp.state import _find_repo_state, _default_state_path
 from aether.cli import build_parser, cmd_init, cmd_check  # noqa: F401
 
@@ -108,6 +121,7 @@ class TestCLIInit:
 # CLI: check (the big one)
 # --------------------------------------------------------------------------
 
+@needs_networkx
 class TestCLICheck:
     def test_check_returns_zero_when_substrate_supports(
         self, tmp_path, monkeypatch
