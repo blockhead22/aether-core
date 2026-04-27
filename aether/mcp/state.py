@@ -47,6 +47,23 @@ from aether.memory import (
 
 DEFAULT_EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
+
+# Process-wide model cache. Shared across all StateStore instances so
+# multiple substrates (multi-tenant scenarios, test suites, scripts
+# that build several stores) only pay the cold-load cost once. The
+# lock serializes load attempts to avoid duplicate torch imports.
+_MODEL_CACHE: Dict[str, Any] = {}
+_MODEL_CACHE_LOCK = None  # initialized lazily — see _get_cache_lock
+
+
+def _get_cache_lock():
+    """Lazy-init a threading.Lock without forcing import at module load."""
+    global _MODEL_CACHE_LOCK
+    if _MODEL_CACHE_LOCK is None:
+        import threading
+        _MODEL_CACHE_LOCK = threading.Lock()
+    return _MODEL_CACHE_LOCK
+
 # Substrate-grounded fidelity threshold:
 # When the caller passes the sentinel default (0.5), we compute a real
 # belief_confidence by searching the substrate. The grounding score is the
@@ -183,33 +200,93 @@ def _trust_history_path(state_path: str) -> str:
 class _LazyEncoder:
     """Wraps sentence-transformers with a graceful fallback.
 
-    If the package isn't installed, encode() returns None and the system
-    falls back to substring search. This keeps `aether-core` importable
-    without the [ml] extra.
+    Loading SentenceTransformer is slow (torch import, possibly model
+    download, device probing). Doing it synchronously inside an MCP
+    tool call blocks the entire turn — on Windows with a cold cache,
+    that can be 30s to several minutes.
+
+    This class never blocks a tool call:
+
+    - `start_warmup()` kicks off the load on a background thread.
+    - `encode()` returns None immediately if the model isn't loaded yet.
+      The caller (search, grounding) falls back to substring matching.
+    - Once the background thread finishes, subsequent `encode()` calls
+      use the model.
+
+    Behavior summary:
+        encoder = _LazyEncoder()
+        encoder.start_warmup()      # returns instantly, model loads behind
+        encoder.encode("hello")     # may return None if not warm yet
+        # ... 30 seconds later ...
+        encoder.encode("hello")     # now returns a numpy vector
+
+    If the [ml] extra isn't installed, `start_warmup()` immediately
+    flags the encoder as unavailable. Same fallback as before.
     """
 
     def __init__(self, model_name: str = DEFAULT_EMBED_MODEL):
         self.model_name = model_name
         self._model = None
         self._unavailable = False
+        self._warmup_thread = None
+        self._warmup_started = False
 
     def _load(self):
+        """Synchronous load. Use start_warmup() for non-blocking init.
+
+        Uses a process-wide cache so multiple StateStore instances in
+        the same process share one model load. The lock serializes
+        first-load attempts to avoid duplicate torch imports.
+        """
         if self._model is not None or self._unavailable:
             return
+        # Fast path: model already cached for this name
+        cached = _MODEL_CACHE.get(self.model_name)
+        if cached is not None:
+            self._model = cached
+            return
+        # Slow path: load under lock
+        lock = _get_cache_lock()
+        with lock:
+            cached = _MODEL_CACHE.get(self.model_name)
+            if cached is not None:
+                self._model = cached
+                return
+            try:
+                from sentence_transformers import SentenceTransformer
+                model = SentenceTransformer(self.model_name)
+                _MODEL_CACHE[self.model_name] = model
+                self._model = model
+            except Exception:
+                self._unavailable = True
+
+    def start_warmup(self) -> None:
+        """Kick off background model load. Idempotent; returns instantly."""
+        if self._warmup_started or self._model is not None or self._unavailable:
+            return
+        self._warmup_started = True
         try:
-            from sentence_transformers import SentenceTransformer
-            self._model = SentenceTransformer(self.model_name)
+            import threading
+            t = threading.Thread(
+                target=self._load,
+                name="aether-encoder-warmup",
+                daemon=True,
+            )
+            t.start()
+            self._warmup_thread = t
         except Exception:
+            # If threading fails (rare), fall back to marking unavailable.
+            # We never block a tool call to recover.
             self._unavailable = True
 
     @property
     def available(self) -> bool:
         """Force-load the model and return whether it's usable.
 
-        WARNING: this triggers a SentenceTransformer load on first
-        access (slow: imports torch, may download model). Use
-        `is_loaded` if you only want to know the current state without
-        triggering work.
+        WARNING: this triggers a *synchronous* SentenceTransformer load
+        on first access — can take tens of seconds to minutes on a cold
+        cache. Almost no caller should use this. Use `is_loaded` for
+        observation, or call `start_warmup()` then poll `is_loaded`.
         """
         if self._model is None and not self._unavailable:
             self._load()
@@ -217,12 +294,7 @@ class _LazyEncoder:
 
     @property
     def is_loaded(self) -> bool:
-        """Whether the encoder is already loaded. Never triggers loading.
-
-        Returns True only after `available` or `encode` has loaded the
-        model successfully. Returns False before first use, even if
-        the encoder *would* load successfully.
-        """
+        """Whether the encoder is already loaded. Never triggers loading."""
         return self._model is not None
 
     @property
@@ -230,17 +302,50 @@ class _LazyEncoder:
         """Whether a previous load attempt failed. Never triggers loading."""
         return self._unavailable
 
+    @property
+    def is_warming(self) -> bool:
+        """Whether a background warmup is currently in flight."""
+        return (
+            self._warmup_started
+            and not self.is_loaded
+            and not self._unavailable
+        )
+
     def encode(self, text: str):
-        if not self.available:
+        """Encode text. Returns None if the model isn't ready yet.
+
+        Crucially, this NEVER blocks waiting for the model. If warmup
+        hasn't completed, the caller gets None and is expected to fall
+        back to substring / structural matching. Once the model is
+        warm, subsequent calls return real vectors.
+        """
+        if not self.is_loaded:
             return None
         try:
             import numpy as np
             vec = self._model.encode([text], convert_to_numpy=True)[0]
-            # Normalize for cosine
             n = float(np.linalg.norm(vec))
             return vec / n if n > 0 else vec
         except Exception:
             return None
+
+    def wait_until_ready(self, timeout: float = 60.0) -> bool:
+        """Block until the encoder is loaded or unavailable.
+
+        Use ONLY in tests or one-off scripts where blocking is acceptable.
+        MCP tool handlers must never call this — they should let
+        encode() return None and fall back to substring matching.
+
+        Returns True if the encoder is ready (loaded), False on timeout
+        or if it failed to load (unavailable).
+        """
+        # If warmup hasn't been started, kick it off so we don't wait
+        # forever on a thread that doesn't exist.
+        if not self._warmup_started and not self._unavailable:
+            self.start_warmup()
+        if self._warmup_thread is not None:
+            self._warmup_thread.join(timeout=timeout)
+        return self.is_loaded
 
 
 # ---------------------------------------------------------------------------
@@ -266,6 +371,15 @@ class StateStore:
         self._encoder = encoder if encoder is not None else (
             _LazyEncoder() if enable_embeddings else None
         )
+        # Kick off model loading in the background so the first
+        # search-style tool call doesn't block on cold-start.
+        # Tools that try to encode before this completes get None
+        # back and fall through to substring matching.
+        if self._encoder is not None and hasattr(self._encoder, "start_warmup"):
+            try:
+                self._encoder.start_warmup()
+            except Exception:
+                pass
         # Tension meter shares the encoder so it can use real similarity.
         self.meter = StructuralTensionMeter(encoder=self._encoder)
 
@@ -1179,10 +1293,13 @@ class StateStore:
     def stats(self) -> dict:
         """Cheap dashboard snapshot. Must NOT trigger encoder load.
 
-        `embeddings_configured` reports whether an encoder is wired up.
-        `embeddings_loaded` reports whether the model is actually
-        warm in memory. Neither field forces a load — that's reserved
-        for tools that actually need to encode text (search, etc.).
+        Three encoder fields:
+            embeddings_available  encoder is wired up (vs disabled)
+            embeddings_loaded     model is warm in memory
+            embeddings_warming    background warmup is in flight
+
+        None of these force a load — that's reserved for the synchronous
+        `available` property which no MCP tool should ever access.
         """
         s = self.graph.stats()
         encoder_configured = (
@@ -1193,6 +1310,10 @@ class StateStore:
             self._encoder is not None
             and getattr(self._encoder, "is_loaded", False)
         )
+        encoder_warming = (
+            self._encoder is not None
+            and getattr(self._encoder, "is_warming", False)
+        )
         return {
             "memory_count": s.get("nodes", 0),
             "edge_count": s.get("edges", 0),
@@ -1201,11 +1322,9 @@ class StateStore:
             "edge_types": s.get("edge_types", {}),
             "held_contradictions": s.get("held_contradictions", 0),
             "evolving_contradictions": s.get("evolving_contradictions", 0),
-            # Backwards-compatible: this used to force-load the model
-            # (a bug shipped in v0.8.0). Now it only reports whether
-            # the encoder is *configured*, never triggers a load.
             "embeddings_available": encoder_configured,
             "embeddings_loaded": encoder_loaded,
+            "embeddings_warming": encoder_warming,
         }
 
 

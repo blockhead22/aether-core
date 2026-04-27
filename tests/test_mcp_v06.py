@@ -30,7 +30,12 @@ def _run(coro):
 
 @pytest.fixture
 def store(tmp_path):
-    return StateStore(state_path=str(tmp_path / "state.json"))
+    s = StateStore(state_path=str(tmp_path / "state.json"))
+    # Some tests need embeddings to flow through tension/grounding paths.
+    # Force synchronous load (bypasses background warmup threading).
+    if s._encoder is not None:
+        s._encoder._load()
+    return s
 
 
 @pytest.fixture

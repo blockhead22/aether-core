@@ -126,7 +126,8 @@ def cmd_status(args) -> int:
     print(f"  held        : {stats.get('held_contradictions', 0)}")
     print(f"  evolving    : {stats.get('evolving_contradictions', 0)}")
     print(f"  embeddings   : configured={stats.get('embeddings_available', False)}, "
-          f"loaded={stats.get('embeddings_loaded', False)}")
+          f"loaded={stats.get('embeddings_loaded', False)}, "
+          f"warming={stats.get('embeddings_warming', False)}")
     return 0
 
 

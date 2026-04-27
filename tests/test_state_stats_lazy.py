@@ -25,49 +25,54 @@ from aether.mcp.state import StateStore, _LazyEncoder
 
 
 @needs_networkx
-def test_stats_does_not_force_encoder_load(tmp_path):
-    """stats() must NOT trigger SentenceTransformer load.
+def test_stats_does_not_block(tmp_path):
+    """stats() must return quickly even when the encoder is mid-warmup.
 
-    Before the fix, accessing `_encoder.available` from inside stats()
-    eagerly imported torch and the MiniLM weights. This caused the
-    cheapest MCP tool (`aether_context`) to block for tens of seconds
-    on first invocation.
+    Before v0.8.1, accessing `_encoder.available` from inside stats()
+    eagerly imported torch and the MiniLM weights. The cheapest MCP
+    tool (`aether_context`) blocked for tens of seconds on first call.
+
+    This test asserts the actual user-facing property: stats() never
+    blocks. We don't assert is_loaded state because v0.8.2's
+    auto-warmup combined with the process-wide cache means the
+    encoder may have already finished loading by the time we measure
+    (especially on subsequent test runs that hit the cached model).
     """
+    import time as _time
     store = StateStore(state_path=str(tmp_path / "s.json"))
-
-    # Encoder is wired up but model is NOT loaded yet.
     assert store._encoder is not None
-    assert store._encoder.is_loaded is False, (
-        "encoder shouldn't be loaded before any tool needs it"
-    )
 
-    # The bug: calling stats() forced a load.
+    t0 = _time.monotonic()
     result = store.stats()
+    elapsed = _time.monotonic() - t0
 
-    # After the fix: stats() reports configured/loaded without loading.
-    assert store._encoder.is_loaded is False, (
-        "stats() must not trigger encoder load"
+    # stats() must be effectively instantaneous regardless of whether
+    # encoder warmup is mid-flight or already done.
+    assert elapsed < 0.5, (
+        f"stats() took {elapsed:.2f}s; v0.8.0 bug regression — "
+        "stats() should never block on encoder loading"
     )
     assert "embeddings_available" in result
     assert "embeddings_loaded" in result
-    # `embeddings_available` (configured) is True even when not loaded.
+    assert "embeddings_warming" in result
     assert result["embeddings_available"] is True
-    # `embeddings_loaded` is False until something actually encodes.
-    assert result["embeddings_loaded"] is False
 
 
 @needs_networkx
 def test_stats_reports_loaded_after_first_encode(tmp_path):
-    """Once a tool that encodes runs, stats() should reflect the load."""
+    """Once the encoder finishes loading, stats() reports it.
+
+    Forces synchronous load to keep the test deterministic across
+    suite vs isolation runs.
+    """
     store = StateStore(state_path=str(tmp_path / "s.json"))
-    assert store.stats()["embeddings_loaded"] is False
-
-    # Trigger an encode through search (only does work if there's data,
-    # but the .available check inside _encode is what loads the model)
-    store.add_memory("test fact", trust=0.7)
-    store.search("test")  # this calls _encode under the hood
-
-    assert store.stats()["embeddings_loaded"] is True
+    initial_loaded = store.stats()["embeddings_loaded"]
+    # Force synchronous load -- bypasses background-thread machinery
+    store._encoder._load()
+    assert store.stats()["embeddings_loaded"] is True, (
+        f"Expected loaded=True after _load(); was {initial_loaded} "
+        f"initially and still False after sync load."
+    )
 
 
 def test_lazy_encoder_state_props_dont_load():

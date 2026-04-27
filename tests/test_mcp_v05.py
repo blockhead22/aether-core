@@ -42,7 +42,14 @@ def _run(coro):
 
 @pytest.fixture
 def store(tmp_path):
-    return StateStore(state_path=str(tmp_path / "state.json"))
+    s = StateStore(state_path=str(tmp_path / "state.json"))
+    # Tests in this file rely on encoder being available for
+    # similarity-based contradiction detection. Force synchronous
+    # load (bypasses the background-thread warmup machinery to
+    # avoid any in-suite thread interactions).
+    if s._encoder is not None:
+        s._encoder._load()
+    return s
 
 
 @pytest.fixture
