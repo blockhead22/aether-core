@@ -1,0 +1,18 @@
+{
+  "name": "aether-core",
+  "version": "0.8.0",
+  "description": "Belief substrate for AI agents — persistent, contradiction-aware trust state that outlives any single model. The model is the mouth, the substrate is the self.",
+  "author": "Nick Block",
+  "homepage": "https://github.com/blockhead22/aether-core",
+  "repository": "https://github.com/blockhead22/aether-core",
+  "license": "MIT",
+  "keywords": [
+    "belief-substrate",
+    "memory",
+    "contradiction",
+    "governance",
+    "epistemics",
+    "trust",
+    "cascade"
+  ]
+}

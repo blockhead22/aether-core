@@ -52,15 +52,25 @@ python examples/01_quickstart.py
 
 There are two example scripts in [`examples/`](examples/). Both run offline, no API keys.
 
-### Plug into Claude Code (or any MCP client)
+### Plug into Claude Code
 
-`aether-core` ships an MCP server. Install with the `mcp` extra and point your AI shell at it:
+The fastest way: install as a Claude Code plugin. The plugin ships the MCP server registration, the auto-ingest Stop hook, and slash commands (`/aether-status`, `/aether-search`, `/aether-check`, `/aether-init`, `/aether-contradictions`, `/aether-ingest`, `/aether-correct`) in one step.
+
+```bash
+claude plugin install github.com/blockhead22/aether-core
+```
+
+Restart Claude Code. The plugin's SessionStart hook will pip-install `aether-core[mcp,graph,ml]` if it isn't already present.
+
+#### Manual install (any MCP client)
+
+If you're using Cursor, Cline, Continue, Goose, Zed, LM Studio, or anything else that speaks MCP — or just prefer manual control:
 
 ```bash
 pip install "aether-core[mcp,graph]"
 ```
 
-Add to `.claude/settings.json` (or your project's `.claude/settings.json`):
+Add to `.claude/settings.json` (or your client's equivalent):
 
 ```json
 {
@@ -73,7 +83,7 @@ Add to `.claude/settings.json` (or your project's `.claude/settings.json`):
 }
 ```
 
-Restart Claude Code. The model now has the full v0.5.0 tool surface:
+Either way, the model now has the full v0.7.0 tool surface:
 
 | Tool | What it does |
 |------|--------------|
@@ -223,6 +233,7 @@ if result.should_block:
 | `aether.memory` | shipped | Slots, memory graph, BDG with cascade pressure |
 | `aether.mcp` | shipped (v0.6.0) | 14-tool MCP server: substrate-grounded sanction + fidelity, embedding-aware search, contradiction detection on write (structural + asymmetric-negation + policy + mutex), correction with BDG cascade, lineage, cascade preview, belief history, session diff, auto-ingest. |
 | `aether.cli` | shipped (v0.7.0) | `aether init / status / contradictions / check`. Pre-commit hook + GitHub Action ship as examples. Repo-aware: if a `.aether/state.json` is in the project tree, the MCP server and CLI discover it automatically. |
+| Claude Code plugin | shipped (v0.8.0) | One-command install via `claude plugin install`. Bundles MCP registration, auto-ingest Stop hook, SessionStart pip-install, and 7 slash commands (`/aether-status`, `/aether-search`, `/aether-check`, `/aether-init`, `/aether-contradictions`, `/aether-ingest`, `/aether-correct`). |
 | `aether.contradiction.mutex` | shipped (v0.6.0) | Class-based mutual-exclusion detector. Catches cases like AWS↔GCP, Postgres↔MySQL, npm↔pnpm where the structural meter misses because no slot extractor knows the domain. |
 | `aether.memory.auto_ingest` | shipped (v0.6.0) | Conservative regex extractor for high-signal facts (preferences, identity, project facts, decisions, constraints, corrections). Plus a sample Claude Code Stop hook in `examples/claude-code-hooks/`. |
 | `aether.adapters` | planned | Cross-vendor adapters so the substrate stays the same regardless of which LLM is the mouth |

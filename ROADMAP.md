@@ -2,6 +2,26 @@
 
 What is shipped today, what is coming next, and what is intentionally not in this repo.
 
+## Shipped (v0.8.0)
+
+- **Claude Code plugin packaging.** Install with one command:
+
+  ```
+  claude plugin install github.com/blockhead22/aether-core
+  ```
+
+  Wires up the MCP server registration, the auto-ingest Stop hook, a SessionStart hook that pip-installs `aether-core[mcp,graph,ml]` if it isn't already present, and seven slash commands:
+
+  - `/aether-status`
+  - `/aether-search <query>`
+  - `/aether-contradictions [disposition]`
+  - `/aether-check <draft>`
+  - `/aether-init`
+  - `/aether-ingest`
+  - `/aether-correct <memory_id> [reason]`
+
+  Plugin layout follows the canonical structure: `.claude-plugin/plugin.json`, `.mcp.json` at the repo root, `hooks/hooks.json`, and `commands/*.md`. Manual MCP install still works for non-Claude-Code clients (Cursor, Cline, Continue, Goose, Zed, LM Studio).
+
 ## Shipped (v0.7.0)
 
 - **Repo-aware substrate discovery.** `StateStore` walks up from cwd looking for `.aether/state.json` and uses it when found. Falls back to user-global `~/.aether/mcp_state.json`. Override with `$AETHER_STATE_PATH`. Disable discovery with `$AETHER_NO_REPO_DISCOVERY=1`. The substrate becomes a per-repo team artifact, not just per-developer state.

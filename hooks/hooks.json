@@ -1,0 +1,25 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python -c \"import importlib.util; spec = importlib.util.find_spec('aether'); exit(0 if spec else 1)\" || pip install --quiet 'aether-core[mcp,graph,ml]'"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python \"${CLAUDE_PLUGIN_ROOT}/examples/claude-code-hooks/auto_ingest_hook.py\""
+          }
+        ]
+      }
+    ]
+  }
+}
