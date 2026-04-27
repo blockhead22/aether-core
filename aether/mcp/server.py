@@ -1,10 +1,11 @@
 """FastMCP server exposing the Aether belief substrate.
 
-Tools registered (v0.5.0):
+Tools registered (v0.6.0):
     Memory:
         aether_remember        write a fact (auto contradiction-detection)
         aether_search          embedding + substring hybrid search
         aether_memory_detail   single-memory deep view
+        aether_ingest_turn     pull high-signal facts from a conversation turn
     Governance:
         aether_sanction        substrate-grounded action gate
         aether_fidelity        substrate-grounded draft auditor
@@ -31,7 +32,7 @@ from mcp.server.fastmcp import FastMCP
 
 from aether.governance import GovernanceTier
 from aether.governance.gap_auditor import ResponseAudit
-from aether.memory import extract_fact_slots
+from aether.memory import extract_fact_slots, ingest_turn
 
 from .state import StateStore, SENTINEL_BELIEF_CONF
 
@@ -95,6 +96,35 @@ def build_server(store: Optional[StateStore] = None) -> FastMCP:
     def aether_memory_detail(memory_id: str) -> dict:
         """Deep view of a single memory: edges, contradictions, history length."""
         return store.memory_detail(memory_id)
+
+    @mcp.tool()
+    def aether_ingest_turn(
+        user_message: str = "",
+        assistant_response: str = "",
+        max_facts: int = 8,
+    ) -> dict:
+        """Pull high-signal facts out of a conversation turn and write them.
+
+        Conservative regex-based extractor. Fires on explicit preferences,
+        identity statements, project-config declarations, decisions,
+        constraints, and corrections. Each candidate is deduped against
+        the substrate before writing. Returns the writes performed.
+
+        Designed to live inside a Claude Code Stop hook, but works as a
+        manual tool too. Pass `user_message` and/or `assistant_response`.
+        """
+        u = user_message or None
+        a = assistant_response or None
+        writes = ingest_turn(
+            store,
+            user_message=u,
+            assistant_response=a,
+            max_facts=max_facts,
+        )
+        return {
+            "ingested_count": len(writes),
+            "writes": writes,
+        }
 
     # ==================================================================
     # Governance tools

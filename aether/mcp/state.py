@@ -29,6 +29,7 @@ from aether.contradiction import (
     StructuralTensionMeter,
     TensionRelationship,
     TensionAction,
+    detect_mutex_conflict,
 )
 from aether.memory import (
     MemoryGraph,
@@ -378,7 +379,7 @@ class StateStore:
             except Exception:
                 continue
 
-            # Three independent contradiction signals — any one triggers an edge.
+            # Four independent contradiction signals — any one triggers an edge.
             slot_conflict = (
                 result.tension_score >= TENSION_CONFLICT_THRESHOLD
                 and result.relationship in (
@@ -404,30 +405,69 @@ class StateStore:
                         and not _looks_like_imperative(text))
                 )
             )
+            mutex_hit = detect_mutex_conflict(other.text, text)
 
-            if not (slot_conflict or asymm_neg or policy):
+            if not (slot_conflict or asymm_neg or policy or mutex_hit):
                 continue
 
             disposition = self._tension_to_disposition(result)
+            # If only mutex fired, classify as RESOLVABLE (one of the
+            # canonical values is wrong or stale)
+            if mutex_hit and not slot_conflict:
+                disposition = Disposition.RESOLVABLE
+            # Build the rule trace so callers can see *why* this fired.
+            trace = [result.action.value]
+            kind = "structural"
+            if mutex_hit:
+                trace.append(
+                    f"mutex:{mutex_hit.class_name}"
+                    f"={mutex_hit.value_a}<>{mutex_hit.value_b}"
+                )
+                kind = "mutex"
+            if asymm_neg:
+                trace.append("asymmetric_negation")
+                kind = "negation_asymmetry" if kind == "structural" else kind
+            if policy:
+                trace.append("policy_contradiction")
+                kind = "policy" if kind == "structural" else kind
+
             edge = ContradictionEdge(
                 disposition=disposition.value,
-                nli_score=result.tension_score,
+                nli_score=max(
+                    result.tension_score,
+                    0.85 if mutex_hit else 0.0,
+                ),
                 overlap_integral=result.supporting_signals.get(
                     "embedding_similarity", sim
                 ),
                 detected_at=time.time(),
-                classification_confidence=result.confidence,
-                rule_trace=[result.action.value],
+                classification_confidence=(
+                    mutex_hit.confidence if mutex_hit else result.confidence
+                ),
+                rule_trace=trace,
             )
             self.graph.add_contradiction(other.memory_id, memory_id, edge)
-            findings.append({
+            finding = {
                 "with_memory_id": other.memory_id,
                 "with_text": other.text[:140],
                 "relationship": result.relationship.value,
                 "disposition": disposition.value,
-                "tension_score": round(result.tension_score, 3),
+                "tension_score": round(
+                    max(result.tension_score, 0.85 if mutex_hit else 0.0),
+                    3,
+                ),
                 "recommended_action": result.action.value,
-            })
+                "kind": kind,
+                "trace": trace,
+            }
+            if mutex_hit:
+                finding["mutex"] = {
+                    "class": mutex_hit.class_name,
+                    "value_a": mutex_hit.value_a,
+                    "value_b": mutex_hit.value_b,
+                    "cue": mutex_hit.cue_used,
+                }
+            findings.append(finding)
 
         return findings
 
@@ -485,6 +525,14 @@ class StateStore:
                 continue
 
             source = _extract_source(node.tags)
+            belnap = getattr(node, "belnap_state", "T")
+            warnings: List[str] = []
+            if belnap == "Both":
+                warnings.append("contested: held contradiction on this memory")
+            elif belnap == "F":
+                warnings.append("deprecated: superseded or resolved away")
+            elif belnap == "Neither":
+                warnings.append("uncertain: insufficient evidence")
             scored.append((
                 combined,
                 {
@@ -496,7 +544,8 @@ class StateStore:
                     "score": round(combined, 3),
                     "similarity": round(sim, 3) if q_emb is not None else None,
                     "substring_score": round(substring_score, 3),
-                    "belnap_state": getattr(node, "belnap_state", "T"),
+                    "belnap_state": belnap,
+                    "warnings": warnings,
                 },
             ))
 
@@ -597,17 +646,32 @@ class StateStore:
                 hit["text"], text, sim,
             ) and hit["trust"] >= POLICY_CONTRA_MIN_TRUST
 
-            if is_factual_contradict or is_policy_contradict or is_asymm_neg:
+            # Mutual-exclusion: "we use AWS" vs "we use GCP"
+            mutex_hit = detect_mutex_conflict(hit["text"], text)
+
+            if is_factual_contradict or is_policy_contradict or is_asymm_neg or mutex_hit:
                 kind = "factual"
                 if is_asymm_neg and not is_factual_contradict:
                     kind = "negation_asymmetry"
                 if is_policy_contradict and not is_factual_contradict:
                     kind = "policy"
-                contradict.append({
+                if mutex_hit and not is_factual_contradict:
+                    kind = "mutex"
+                entry = {
                     **hit,
-                    "tension_score": round(tr.tension_score, 3),
+                    "tension_score": round(
+                        max(tr.tension_score, 0.85 if mutex_hit else 0.0),
+                        3,
+                    ),
                     "kind": kind,
-                })
+                }
+                if mutex_hit:
+                    entry["mutex"] = {
+                        "class": mutex_hit.class_name,
+                        "value_a": mutex_hit.value_a,
+                        "value_b": mutex_hit.value_b,
+                    }
+                contradict.append(entry)
             elif tr.relationship in (
                 TensionRelationship.DUPLICATE,
                 TensionRelationship.REFINEMENT,

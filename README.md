@@ -221,7 +221,9 @@ if result.should_block:
 | `aether.contradiction` | shipped | Structural tension. Zero model calls. |
 | `aether.epistemics` | shipped | Belief backpropagation, trust evolution |
 | `aether.memory` | shipped | Slots, memory graph, BDG with cascade pressure |
-| `aether.mcp` | shipped (v0.5.0) | 13-tool MCP server: substrate-grounded sanction + fidelity, embedding-aware search, contradiction detection on write, correction with BDG cascade, lineage, cascade preview, belief history, session diff. |
+| `aether.mcp` | shipped (v0.6.0) | 14-tool MCP server: substrate-grounded sanction + fidelity, embedding-aware search, contradiction detection on write (structural + asymmetric-negation + policy + mutex), correction with BDG cascade, lineage, cascade preview, belief history, session diff, auto-ingest. |
+| `aether.contradiction.mutex` | shipped (v0.6.0) | Class-based mutual-exclusion detector. Catches cases like AWS↔GCP, Postgres↔MySQL, npm↔pnpm where the structural meter misses because no slot extractor knows the domain. |
+| `aether.memory.auto_ingest` | shipped (v0.6.0) | Conservative regex extractor for high-signal facts (preferences, identity, project facts, decisions, constraints, corrections). Plus a sample Claude Code Stop hook in `examples/claude-code-hooks/`. |
 | `aether.adapters` | planned | Cross-vendor adapters so the substrate stays the same regardless of which LLM is the mouth |
 
 See [ROADMAP.md](ROADMAP.md) for what's coming and what's intentionally out of scope.

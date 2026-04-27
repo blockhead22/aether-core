@@ -44,6 +44,12 @@ from .graph import (
     BeliefDependencyGraph,
 )
 
+from .auto_ingest import (
+    CandidateFact,
+    extract_facts,
+    ingest_turn,
+)
+
 # Re-exported for convenience: iterate every MemoryNode in a graph
 # (useful for search and export).
 
@@ -71,4 +77,8 @@ __all__ = [
     "MemoryGraph",
     "CascadeResult",
     "BeliefDependencyGraph",
+    # Auto-ingest
+    "CandidateFact",
+    "extract_facts",
+    "ingest_turn",
 ]

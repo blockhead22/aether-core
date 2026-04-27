@@ -27,6 +27,13 @@ from .tension import (
     OSCILLATION_FLAG_THRESHOLD,
     OSCILLATION_TENSION_BOOST,
 )
+from .mutex import (
+    MutexClass,
+    MutexConflict,
+    detect_mutex_conflict,
+    all_classes,
+    DEFAULT_CLASSES,
+)
 
 __all__ = [
     "StructuralTensionMeter",
@@ -42,4 +49,9 @@ __all__ = [
     "TRUST_CONFLICT_DELTA",
     "OSCILLATION_FLAG_THRESHOLD",
     "OSCILLATION_TENSION_BOOST",
+    "MutexClass",
+    "MutexConflict",
+    "detect_mutex_conflict",
+    "all_classes",
+    "DEFAULT_CLASSES",
 ]
