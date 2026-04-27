@@ -125,7 +125,8 @@ def cmd_status(args) -> int:
     print(f"  edge types   : {stats.get('edge_types', {})}")
     print(f"  held        : {stats.get('held_contradictions', 0)}")
     print(f"  evolving    : {stats.get('evolving_contradictions', 0)}")
-    print(f"  embeddings   : {stats.get('embeddings_available', False)}")
+    print(f"  embeddings   : configured={stats.get('embeddings_available', False)}, "
+          f"loaded={stats.get('embeddings_loaded', False)}")
     return 0
 
 

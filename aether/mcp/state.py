@@ -204,9 +204,31 @@ class _LazyEncoder:
 
     @property
     def available(self) -> bool:
+        """Force-load the model and return whether it's usable.
+
+        WARNING: this triggers a SentenceTransformer load on first
+        access (slow: imports torch, may download model). Use
+        `is_loaded` if you only want to know the current state without
+        triggering work.
+        """
         if self._model is None and not self._unavailable:
             self._load()
         return not self._unavailable and self._model is not None
+
+    @property
+    def is_loaded(self) -> bool:
+        """Whether the encoder is already loaded. Never triggers loading.
+
+        Returns True only after `available` or `encode` has loaded the
+        model successfully. Returns False before first use, even if
+        the encoder *would* load successfully.
+        """
+        return self._model is not None
+
+    @property
+    def is_unavailable(self) -> bool:
+        """Whether a previous load attempt failed. Never triggers loading."""
+        return self._unavailable
 
     def encode(self, text: str):
         if not self.available:
@@ -1155,7 +1177,22 @@ class StateStore:
     # ------------------------------------------------------------------
 
     def stats(self) -> dict:
+        """Cheap dashboard snapshot. Must NOT trigger encoder load.
+
+        `embeddings_configured` reports whether an encoder is wired up.
+        `embeddings_loaded` reports whether the model is actually
+        warm in memory. Neither field forces a load — that's reserved
+        for tools that actually need to encode text (search, etc.).
+        """
         s = self.graph.stats()
+        encoder_configured = (
+            self._encoder is not None
+            and not getattr(self._encoder, "is_unavailable", False)
+        )
+        encoder_loaded = (
+            self._encoder is not None
+            and getattr(self._encoder, "is_loaded", False)
+        )
         return {
             "memory_count": s.get("nodes", 0),
             "edge_count": s.get("edges", 0),
@@ -1164,10 +1201,11 @@ class StateStore:
             "edge_types": s.get("edge_types", {}),
             "held_contradictions": s.get("held_contradictions", 0),
             "evolving_contradictions": s.get("evolving_contradictions", 0),
-            "embeddings_available": (
-                self._encoder is not None and
-                getattr(self._encoder, "available", False)
-            ),
+            # Backwards-compatible: this used to force-load the model
+            # (a bug shipped in v0.8.0). Now it only reports whether
+            # the encoder is *configured*, never triggers a load.
+            "embeddings_available": encoder_configured,
+            "embeddings_loaded": encoder_loaded,
         }
 
 
