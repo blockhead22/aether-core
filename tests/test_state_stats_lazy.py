@@ -10,9 +10,21 @@ from __future__ import annotations
 
 import pytest
 
+try:
+    import networkx  # noqa: F401
+    _HAS_NETWORKX = True
+except ImportError:
+    _HAS_NETWORKX = False
+
+needs_networkx = pytest.mark.skipif(
+    not _HAS_NETWORKX,
+    reason="networkx required (install [graph] extra)",
+)
+
 from aether.mcp.state import StateStore, _LazyEncoder
 
 
+@needs_networkx
 def test_stats_does_not_force_encoder_load(tmp_path):
     """stats() must NOT trigger SentenceTransformer load.
 
@@ -44,6 +56,7 @@ def test_stats_does_not_force_encoder_load(tmp_path):
     assert result["embeddings_loaded"] is False
 
 
+@needs_networkx
 def test_stats_reports_loaded_after_first_encode(tmp_path):
     """Once a tool that encodes runs, stats() should reflect the load."""
     store = StateStore(state_path=str(tmp_path / "s.json"))
