@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# Aether pre-commit fidelity hook.
+#
+# Reads the commit message and the staged diff, runs `aether check`,
+# and blocks the commit if the speech/belief gap is CRITICAL.
+#
+# Install:
+#   cp examples/git-hooks/pre-commit .git/hooks/pre-commit
+#   chmod +x .git/hooks/pre-commit
+
+set -euo pipefail
+
+if ! command -v aether >/dev/null 2>&1; then
+    exit 0
+fi
+
+if [ -n "${GIT_REFLOG_ACTION:-}" ]; then
+    case "$GIT_REFLOG_ACTION" in
+        rebase*|merge*|revert*|"cherry-pick"*) exit 0 ;;
+    esac
+fi
+
+MSG_FILE="${1:-.git/COMMIT_EDITMSG}"
+if [ ! -f "$MSG_FILE" ]; then
+    exit 0
+fi
+
+DIFF=$(mktemp)
+trap 'rm -f "$DIFF"' EXIT
+git diff --cached --no-color > "$DIFF" || true
+
+if aether check --message-file "$MSG_FILE" --diff "$DIFF" --fail-severity CRITICAL; then
+    exit 0
+else
+    echo
+    echo "[aether pre-commit] commit blocked: speech/belief gap is CRITICAL." >&2
+    echo "  Either revise the commit message or run with --no-verify." >&2
+    exit 1
+fi

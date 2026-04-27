@@ -129,10 +129,44 @@ def _is_asymmetric_negation_contradict(
     return a_neg != b_neg
 
 
+def _find_repo_state(start_dir: Optional[str] = None) -> Optional[str]:
+    """Walk up from `start_dir` looking for a project-level .aether/state.json.
+
+    Stops at the first `.aether/` directory found or at the filesystem
+    root. Returns None if nothing is found.
+
+    A repo-level substrate is identified by a `.aether/state.json` file
+    sitting at any ancestor directory of `start_dir`. This convention
+    matches how dotfiles like .gitignore, .editorconfig, .prettierrc work.
+    """
+    cur = Path(start_dir or os.getcwd()).resolve()
+    while True:
+        candidate = cur / ".aether" / "state.json"
+        if candidate.exists():
+            return str(candidate)
+        # Stop at filesystem root
+        if cur.parent == cur:
+            return None
+        cur = cur.parent
+
+
 def _default_state_path() -> str:
+    """Resolve the substrate state path with this priority:
+
+    1. $AETHER_STATE_PATH if set (explicit override)
+    2. .aether/state.json in the current project tree (repo-scoped)
+    3. ~/.aether/mcp_state.json (user-global default)
+    """
     override = os.environ.get("AETHER_STATE_PATH")
     if override:
         return override
+
+    # Skip repo discovery when AETHER_NO_REPO_DISCOVERY=1 is set
+    if not os.environ.get("AETHER_NO_REPO_DISCOVERY"):
+        repo = _find_repo_state()
+        if repo:
+            return repo
+
     home = Path.home()
     return str(home / ".aether" / "mcp_state.json")
 

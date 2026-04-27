@@ -1,0 +1,105 @@
+# Drop into .github/workflows/aether-check.yml
+#
+# Runs `aether check` against the PR title + body + diff. Posts a
+# comment with the grounding report. Fails the check at CRITICAL.
+#
+# Requires:
+#   - .aether/state.json committed to the repo (run `aether init` first)
+#   - aether-core[mcp,graph,ml] installed in the workflow
+#
+# The substrate ships with the repo, so the check has a real
+# grounding source. Without a committed substrate this falls back to
+# a near-empty state and the check becomes a no-op.
+
+name: Aether fidelity check
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  fidelity:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install aether-core
+        run: |
+          python -m pip install --upgrade pip
+          pip install "aether-core[mcp,graph,ml]"
+
+      - name: Compose check input
+        id: input
+        run: |
+          {
+            echo "PR Title: ${{ github.event.pull_request.title }}"
+            echo
+            echo "${{ github.event.pull_request.body }}"
+          } > /tmp/pr.txt
+          git diff origin/${{ github.base_ref }}...HEAD --no-color > /tmp/pr.diff || true
+
+      - name: Run aether check
+        id: check
+        continue-on-error: true
+        run: |
+          aether check \
+            --message-file /tmp/pr.txt \
+            --diff /tmp/pr.diff \
+            --format json \
+            --fail-severity CRITICAL > /tmp/aether.json
+          echo "exitcode=$?" >> "$GITHUB_OUTPUT"
+
+      - name: Post comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const body = JSON.parse(fs.readFileSync('/tmp/aether.json', 'utf8'));
+            const lines = [];
+            lines.push('## Aether fidelity report');
+            lines.push('');
+            lines.push(`- severity: \`${body.severity}\``);
+            lines.push(`- action: \`${body.action}\``);
+            lines.push(`- gap_score: \`${body.gap_score}\``);
+            lines.push(`- speech_confidence: ${body.speech_confidence}`);
+            lines.push(`- belief_confidence: ${body.belief_confidence}`);
+            lines.push(`- grounding_method: ${body.grounding_method}`);
+            if ((body.contradicting || []).length) {
+              lines.push('');
+              lines.push('**Contradicting memories:**');
+              for (const c of body.contradicting.slice(0, 3)) {
+                const kind = c.kind || '?';
+                lines.push(`- [${kind}] (trust ${c.trust}) ${c.text.slice(0, 200)}`);
+              }
+            }
+            if ((body.supporting || []).length) {
+              lines.push('');
+              lines.push('**Supporting memories:**');
+              for (const s of body.supporting.slice(0, 3)) {
+                lines.push(`- (trust ${s.trust}) ${s.text.slice(0, 200)}`);
+              }
+            }
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: lines.join('\n'),
+            });
+
+      - name: Fail at CRITICAL
+        if: steps.check.outputs.exitcode != '0'
+        run: |
+          echo "Aether fidelity check failed at CRITICAL severity."
+          exit 1

@@ -222,6 +222,7 @@ if result.should_block:
 | `aether.epistemics` | shipped | Belief backpropagation, trust evolution |
 | `aether.memory` | shipped | Slots, memory graph, BDG with cascade pressure |
 | `aether.mcp` | shipped (v0.6.0) | 14-tool MCP server: substrate-grounded sanction + fidelity, embedding-aware search, contradiction detection on write (structural + asymmetric-negation + policy + mutex), correction with BDG cascade, lineage, cascade preview, belief history, session diff, auto-ingest. |
+| `aether.cli` | shipped (v0.7.0) | `aether init / status / contradictions / check`. Pre-commit hook + GitHub Action ship as examples. Repo-aware: if a `.aether/state.json` is in the project tree, the MCP server and CLI discover it automatically. |
 | `aether.contradiction.mutex` | shipped (v0.6.0) | Class-based mutual-exclusion detector. Catches cases like AWS↔GCP, Postgres↔MySQL, npm↔pnpm where the structural meter misses because no slot extractor knows the domain. |
 | `aether.memory.auto_ingest` | shipped (v0.6.0) | Conservative regex extractor for high-signal facts (preferences, identity, project facts, decisions, constraints, corrections). Plus a sample Claude Code Stop hook in `examples/claude-code-hooks/`. |
 | `aether.adapters` | planned | Cross-vendor adapters so the substrate stays the same regardless of which LLM is the mouth |
