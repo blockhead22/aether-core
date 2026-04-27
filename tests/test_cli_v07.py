@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 from aether.mcp.state import _find_repo_state, _default_state_path
-from aether.cli import build_parser, cmd_init, cmd_check
+from aether.cli import build_parser, cmd_init, cmd_check  # noqa: F401
 
 
 # --------------------------------------------------------------------------

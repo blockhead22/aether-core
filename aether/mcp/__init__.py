@@ -10,8 +10,21 @@ Run as a stdio server:
 State lives in ~/.aether/mcp_state.json by default; override with
 the AETHER_STATE_PATH environment variable. State is loaded on
 startup and saved after every write.
+
+Imports are lazy so this package can be imported without the optional
+[mcp] extra installed. `aether.mcp.state` and `aether.mcp.server`
+are importable directly when their dependencies are available.
 """
 
-from .server import build_server, run
+from __future__ import annotations
 
 __all__ = ["build_server", "run"]
+
+
+def __getattr__(name: str):
+    # Lazy proxy: only pull in `.server` (which requires the `mcp`
+    # package) when the caller actually asks for it.
+    if name in __all__:
+        from .server import build_server, run  # noqa: F401
+        return {"build_server": build_server, "run": run}[name]
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
