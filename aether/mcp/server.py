@@ -1,18 +1,26 @@
 """FastMCP server exposing the Aether belief substrate.
 
-Tools registered (v0.4.0):
-    aether_remember   write a fact into the belief state
-    aether_search     find memories by text overlap
-    aether_sanction   pre-action governance gate (APPROVE/HOLD/REJECT)
-    aether_fidelity   grade a draft response against belief support
-    aether_context    dashboard snapshot of current substrate state
+Tools registered (v0.5.0):
+    Memory:
+        aether_remember        write a fact (auto contradiction-detection)
+        aether_search          embedding + substring hybrid search
+        aether_memory_detail   single-memory deep view
+    Governance:
+        aether_sanction        substrate-grounded action gate
+        aether_fidelity        substrate-grounded draft auditor
+    Substrate ops:
+        aether_correct         trust update + cascade through BDG
+        aether_lineage         walk SUPPORTS edges back to source
+        aether_cascade_preview dry-run a correction
+        aether_belief_history  trust-evolution log per memory
+        aether_contradictions  list contradictions, optional disposition filter
+        aether_resolve         resolve a contradiction (deprecate / hold / drop)
+        aether_session_diff    what changed since a given timestamp
+    Introspection:
+        aether_context         dashboard snapshot
 
-Future (planned):
-    aether_correct, aether_lineage, aether_cascade_preview,
-    aether_done_check, aether_session_diff, aether_resolve
-
-State is held in process via StateStore. Persistence is a single
-JSON file on disk (default: ~/.aether/mcp_state.json).
+State is held in process via StateStore. Persistence is JSON on disk
+(default: ~/.aether/mcp_state.json) plus a side-car trust_history file.
 """
 
 from __future__ import annotations
@@ -25,57 +33,56 @@ from aether.governance import GovernanceTier
 from aether.governance.gap_auditor import ResponseAudit
 from aether.memory import extract_fact_slots
 
-from .state import StateStore
+from .state import StateStore, SENTINEL_BELIEF_CONF
 
 
 def build_server(store: Optional[StateStore] = None) -> FastMCP:
-    """Construct a fresh FastMCP server bound to the given StateStore.
-
-    Most callers want `run()` instead, which builds the default store
-    (loading from disk) and runs the stdio transport.
-    """
+    """Construct a fresh FastMCP server bound to the given StateStore."""
     store = store or StateStore()
     mcp = FastMCP("aether")
 
-    # ------------------------------------------------------------------
+    # ==================================================================
     # Memory tools
-    # ------------------------------------------------------------------
+    # ==================================================================
 
     @mcp.tool()
     def aether_remember(
         text: str,
         trust: float = 0.7,
         source: str = "user",
+        detect_contradictions: bool = True,
     ) -> dict:
         """Store a new fact in the belief state.
 
         Trust defaults to 0.7 (user-asserted). Use lower values for
         inferred or low-confidence facts.
 
-        Slot extraction runs automatically; structured slots (location,
-        employer, age, etc.) are attached to the memory.
+        Slot extraction runs automatically. Structural tension detection
+        runs against the top-K most similar existing memories — if a
+        clash is found, a CONTRADICTS edge is added and surfaced in
+        `tension_findings`.
 
-        Returns the assigned memory_id and any extracted slots.
+        Returns the assigned memory_id, extracted slots, and any
+        contradictions detected on write.
         """
         extracted = extract_fact_slots(text)
         slots = {k: v.normalized for k, v in extracted.items()} or None
-        memory_id = store.add_memory(
-            text=text, trust=trust, source=source, slots=slots,
+        return store.add_memory(
+            text=text,
+            trust=trust,
+            source=source,
+            slots=slots,
+            detect_contradictions=detect_contradictions,
         )
-        return {
-            "memory_id": memory_id,
-            "trust": trust,
-            "source": source,
-            "extracted_slots": slots or {},
-        }
 
     @mcp.tool()
     def aether_search(query: str, limit: int = 5) -> dict:
         """Find memories matching the query.
 
-        Pure structural search: substring + token overlap. Sufficient
-        for small belief states (<1000 memories). Returns the top
-        `limit` matches ranked by score.
+        Hybrid search: cosine over local embeddings (sentence-transformers
+        all-MiniLM-L6-v2) when available, falling back to substring +
+        token overlap when not. Each result includes both the combined
+        score and the raw similarity.
         """
         results = store.search(query, limit=limit)
         return {
@@ -84,9 +91,14 @@ def build_server(store: Optional[StateStore] = None) -> FastMCP:
             "results": results,
         }
 
-    # ------------------------------------------------------------------
+    @mcp.tool()
+    def aether_memory_detail(memory_id: str) -> dict:
+        """Deep view of a single memory: edges, contradictions, history length."""
+        return store.memory_detail(memory_id)
+
+    # ==================================================================
     # Governance tools
-    # ------------------------------------------------------------------
+    # ==================================================================
 
     @mcp.tool()
     def aether_sanction(
@@ -95,25 +107,29 @@ def build_server(store: Optional[StateStore] = None) -> FastMCP:
     ) -> dict:
         """Pre-action governance gate.
 
-        Runs the proposed action through the four-tier dispatcher and
-        the six immune agents. Returns one of:
+        Returns APPROVE / HOLD / REJECT based on:
+          - Substrate grounding for the action (auto-computed when
+            `belief_confidence` is the sentinel default 0.5)
+          - The 6 immune agents in the governance layer
+          - Any contradictions found between the action and stored beliefs
 
-            APPROVE  the action is well-supported and consistent
-            HOLD     the action is borderline; reduce displayed confidence
-            REJECT   the action contradicts belief or fails a law
-                     (`should_block` is True)
-
-        belief_confidence is the agent's internal estimate of how well
-        the belief state supports the action (0.0 = no support,
-        1.0 = strong support). Agents that don't track this should
-        pass 0.5 and let the governance layer compute its own.
-
-        Always call this before irreversible work.
+        When the substrate contradicts the proposed action with high
+        trust, the verdict is REJECT and the contradicting memories
+        appear in the `contradicting_memories` field.
         """
+        # If caller passed sentinel, ground in substrate
+        if abs(belief_confidence - SENTINEL_BELIEF_CONF) < 1e-6:
+            grounding = store.compute_grounding(action)
+            effective_belief = grounding["belief_confidence"]
+            grounded = True
+        else:
+            grounding = {"support": [], "contradict": [], "method": "caller_supplied"}
+            effective_belief = belief_confidence
+            grounded = False
+
         result = store.gov.govern_response(
-            action, belief_confidence=belief_confidence,
+            action, belief_confidence=effective_belief,
         )
-        # Map four internal tiers to a three-state external API.
         tier = result.tier
         if result.should_block:
             verdict = "REJECT"
@@ -122,11 +138,21 @@ def build_server(store: Optional[StateStore] = None) -> FastMCP:
         else:
             verdict = "APPROVE"
 
+        # Substrate override: high-trust contradictions force REJECT
+        contradicting = grounding.get("contradict", [])
+        if any(c["trust"] >= 0.7 for c in contradicting):
+            verdict = "REJECT"
+            tier = GovernanceTier.ESCALATE
+
         return {
             "verdict": verdict,
             "tier": tier.value,
-            "should_block": result.should_block,
+            "should_block": verdict == "REJECT",
             "confidence_adjustment": result.confidence_adjustment,
+            "belief_confidence": effective_belief,
+            "grounded_in_substrate": grounded,
+            "supporting_memories": grounding.get("support", [])[:3],
+            "contradicting_memories": contradicting[:3],
             "annotations": [
                 {
                     "agent": a.agent,
@@ -143,18 +169,28 @@ def build_server(store: Optional[StateStore] = None) -> FastMCP:
         response: str,
         belief_confidence: float = 0.5,
     ) -> dict:
-        """Grade a draft response against belief support.
+        """Grade a draft response against substrate-backed belief support.
 
-        Specifically wraps the `GapAuditor` (Law 5: outward confidence
-        must be bounded by internal support). Returns the measured
-        belief/speech gap, severity, and the recommended adjustment.
+        When `belief_confidence` is the sentinel default 0.5, the function
+        searches the substrate to compute a real grounding score from
+        supporting / contradicting memories. The caller can override by
+        passing a specific value.
 
-        Use this on drafts before sending. If the gap is high, hedge
-        the response or block it.
+        Returns gap_score, severity, action, plus the grounding evidence
+        that was used.
         """
+        if abs(belief_confidence - SENTINEL_BELIEF_CONF) < 1e-6:
+            grounding = store.compute_grounding(response)
+            effective_belief = grounding["belief_confidence"]
+            grounded = True
+        else:
+            grounding = {"support": [], "contradict": [], "method": "caller_supplied"}
+            effective_belief = belief_confidence
+            grounded = False
+
         audit = ResponseAudit(
             response_text=response,
-            belief_confidence=belief_confidence,
+            belief_confidence=effective_belief,
         )
         verdict = store.gov.gap_auditor.audit(audit)
         return {
@@ -163,33 +199,136 @@ def build_server(store: Optional[StateStore] = None) -> FastMCP:
             "action": verdict.action.value,
             "speech_confidence": verdict.speech_confidence,
             "belief_confidence": verdict.belief_confidence,
+            "grounded_in_substrate": grounded,
+            "grounding_method": grounding.get("method", "caller_supplied"),
+            "supporting_memories": grounding.get("support", [])[:3],
+            "contradicting_memories": grounding.get("contradict", [])[:3],
             "factors": verdict.contributing_factors,
             "law": verdict.law,
         }
 
-    # ------------------------------------------------------------------
+    # ==================================================================
+    # Substrate operations
+    # ==================================================================
+
+    @mcp.tool()
+    def aether_correct(
+        memory_id: str,
+        new_trust: float = -1.0,
+        replacement_text: str = "",
+        reason: str = "",
+        source: str = "user",
+    ) -> dict:
+        """Correct a memory and cascade the trust drop to dependents.
+
+        new_trust:
+            -1.0 (default sentinel) - halve current trust as soft demotion
+            0.0  - full deprecation
+            n    - set to specific value
+
+        Returns the cascade result with affected nodes and depths.
+        """
+        nt: Optional[float] = None if new_trust < 0 else new_trust
+        rt: Optional[str] = replacement_text if replacement_text else None
+        return store.correct(
+            memory_id=memory_id,
+            new_trust=nt,
+            replacement_text=rt,
+            reason=reason,
+            source=source,
+        )
+
+    @mcp.tool()
+    def aether_lineage(memory_id: str, hops: int = 3) -> dict:
+        """Walk SUPPORTS / DERIVED_FROM edges back to source memories.
+
+        Answers: "Why do I believe this?" Returns the chain of memories
+        whose trust transitively supports the target.
+        """
+        return store.lineage(memory_id=memory_id, hops=hops)
+
+    @mcp.tool()
+    def aether_cascade_preview(
+        memory_id: str,
+        proposed_delta: float = -0.4,
+    ) -> dict:
+        """Dry-run a correction. See the blast radius before committing.
+
+        Same engine as aether_correct, but no state mutation.
+        """
+        return store.cascade_preview(
+            memory_id=memory_id,
+            proposed_delta=proposed_delta,
+        )
+
+    @mcp.tool()
+    def aether_belief_history(memory_id: str) -> dict:
+        """How a memory's trust has evolved over time."""
+        return store.belief_history(memory_id)
+
+    @mcp.tool()
+    def aether_contradictions(
+        disposition: str = "",
+        limit: int = 50,
+    ) -> dict:
+        """List contradictions in the substrate.
+
+        disposition: optional filter — "resolvable", "held", "evolving",
+                     "contextual", or "" for all.
+        """
+        disp: Optional[str] = disposition if disposition else None
+        return {
+            "contradictions": store.list_contradictions(
+                disposition=disp, limit=limit,
+            ),
+        }
+
+    @mcp.tool()
+    def aether_resolve(
+        memory_id_a: str,
+        memory_id_b: str,
+        keep: str,
+        reason: str = "",
+    ) -> dict:
+        """Resolve a contradiction.
+
+        keep:
+            "a"     deprecate b, supersede with a
+            "b"     deprecate a, supersede with b
+            "both"  mark both Belnap=BOTH (held)
+            "drop"  mark both Belnap=FALSE
+        """
+        return store.resolve_contradiction(
+            memory_id_a=memory_id_a,
+            memory_id_b=memory_id_b,
+            keep=keep,
+            reason=reason,
+        )
+
+    @mcp.tool()
+    def aether_session_diff(since: float) -> dict:
+        """What changed in the substrate since the given timestamp.
+
+        Useful at session start to brief a returning agent on memories
+        added, corrections accepted, and contradictions surfaced since
+        last connect.
+        """
+        return store.session_diff(since=since)
+
+    # ==================================================================
     # Introspection
-    # ------------------------------------------------------------------
+    # ==================================================================
 
     @mcp.tool()
     def aether_context() -> dict:
-        """Dashboard snapshot of the current substrate state.
-
-        Returns memory count, edge count, Belnap state distribution,
-        and the path to the on-disk state file.
-        """
+        """Dashboard snapshot of the current substrate state."""
         return store.stats()
 
     return mcp
 
 
 def run() -> None:
-    """Run the Aether MCP server over stdio.
-
-    This is the entrypoint for `python -m aether.mcp`. State is loaded
-    from disk, the server runs until the client disconnects, and state
-    is saved on every mutation along the way.
-    """
+    """Run the Aether MCP server over stdio."""
     store = StateStore()
     server = build_server(store=store)
     server.run("stdio")

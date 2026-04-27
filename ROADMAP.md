@@ -2,29 +2,32 @@
 
 What is shipped today, what is coming next, and what is intentionally not in this repo.
 
-## Shipped (v0.4.0)
+## Shipped (v0.5.0)
 
 - `aether.governance`. Six immune agents and the four-tier `GovernanceLayer` dispatcher.
 - `aether.contradiction`. The `StructuralTensionMeter`. Zero-LLM tension detection between two beliefs at about 0.2 seconds per pair.
 - `aether.epistemics`. `EpistemicLoss`, belief backpropagation, `DomainVolatility`.
 - `aether.memory`. Fact slot extraction, `MemoryGraph`, and a `BeliefDependencyGraph` that propagates cascades with measurable pressure (`propagate_cascade`, `propagate_backward`, held-node firewalling).
-- `aether.mcp`. Standalone MCP server exposing the substrate to Claude Code, Cursor, Cline, Continue, Goose, Zed, LM Studio, or anything that speaks MCP. Tools: `aether_remember`, `aether_search`, `aether_sanction`, `aether_fidelity`, `aether_context`. Runs in-process. Persists state to JSON.
+- `aether.mcp`. Standalone MCP server with 13 tools. Persists state to JSON plus a side-car trust-history log.
+  - **Memory:** `aether_remember` (with auto contradiction detection on write), `aether_search` (embedding + substring hybrid), `aether_memory_detail`.
+  - **Governance:** `aether_sanction` and `aether_fidelity` — both substrate-grounded. When the caller omits `belief_confidence`, the tool searches the substrate and computes a real grounding score from supporting and contradicting memories. Sanction includes a policy-contradiction check that catches command-vs-prohibition cases the structural tension meter misses.
+  - **Substrate ops:** `aether_correct` (with BDG cascade through SUPPORTS edges), `aether_lineage`, `aether_cascade_preview` (dry-run, no commit), `aether_belief_history`, `aether_contradictions`, `aether_resolve`, `aether_session_diff`.
 - PyPI release with auto-publish via Trusted Publishers (OIDC).
-- 97 tests, GitHub Actions CI, MIT license, Python 3.10 and up.
+- 113 tests, GitHub Actions CI, MIT license, Python 3.10 and up.
 
 ## Near term (next one or two minor releases)
 
-More MCP tools. The current set is the minimum viable loop. The differentiator tools that already work in the private codebase still need extraction:
+`.aether/` repo artifact. A directory checked into a project's git so the substrate becomes a team artifact, not just per-developer state. Onboard a new dev and they inherit the repo's accumulated decisions. CI hook that runs `aether_fidelity` on PR description and diff.
 
-- `aether_lineage`. Answers "why do I believe this" by walking BDG edges.
-- `aether_cascade_preview`. Dry-runs a trust change so you can see the blast radius before committing.
-- `aether_correct`. Triggers belief backprop through dependent memories on correction.
-- `aether_done_check`. Grades a response against declared success criteria.
-- `aether_session_diff`. Briefs a returning session on what changed.
+Claude Code plugin packaging. So `claude plugin add aether-core` works without manual `.claude/settings.json` editing.
+
+Auto-ingest hook. Stop-event hook that scans the last turn for high-signal facts and writes them with `aether_remember`. The substrate fills without the user having to remember.
 
 Variance probe. Per-model fragility characterization. Same prompt, several LLMs, measure where the belief/speech gap diverges. Useful both as a diagnostic and as evidence that the substrate is what gives you portability.
 
 Held-contradiction lifecycle. Today there is a `Disposition.HELD` enum and the right primitives. The full state machine (Active to Settling to Settled to Archived, with policies for each transition) is not yet in.
+
+`aether_done_check` / `aether_done_shape`. Declared success criteria, then grade a response against them.
 
 ## Medium term
 

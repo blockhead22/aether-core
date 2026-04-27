@@ -12,9 +12,17 @@ If you are a human reader: you can follow this file by hand, but the README's
 ## What you are installing
 
 `aether-core` is a Python package that ships an MCP server. After installation
-the user's AI client will have five new tools available: `aether_remember`,
-`aether_search`, `aether_sanction`, `aether_fidelity`, `aether_context`. State
-persists across sessions in `~/.aether/mcp_state.json` by default.
+the user's AI client will have 13 new tools available:
+
+- Memory: `aether_remember`, `aether_search`, `aether_memory_detail`
+- Governance: `aether_sanction`, `aether_fidelity` (both substrate-grounded)
+- Substrate ops: `aether_correct`, `aether_lineage`, `aether_cascade_preview`,
+  `aether_belief_history`, `aether_contradictions`, `aether_resolve`,
+  `aether_session_diff`
+- Introspection: `aether_context`
+
+State persists across sessions in `~/.aether/mcp_state.json` by default.
+Trust history is in a side-car file next to it.
 
 ## Step 1. Install the Python package
 
@@ -139,12 +147,14 @@ tools appear in their tool listing.
 
 Tell the user, in plain language:
 
-> Aether is installed. State persists in `~/.aether/mcp_state.json` (or
-> `$AETHER_STATE_PATH` if you set it). Five tools are now available:
-> `aether_remember`, `aether_search`, `aether_sanction`, `aether_fidelity`,
-> `aether_context`. Try saying "Remember that I prefer Python over Rust"
-> to test it, then "What do you remember about my language preferences?"
-> in a later session.
+> Aether is installed (v0.5.0). State persists in `~/.aether/mcp_state.json`
+> (or `$AETHER_STATE_PATH` if you set it). 13 tools are now available across
+> memory, governance, and substrate ops. Try saying "Remember that I prefer
+> Python over Rust" to test it, then ask the assistant to call
+> `aether_search` for "language preferences" in a later session. Sanction
+> and fidelity now ground in substrate when you don't pass
+> `belief_confidence`, so the audit reflects real evidence and not just a
+> number the model picked.
 
 ## Optional: change the state path
 

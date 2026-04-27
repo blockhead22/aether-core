@@ -73,7 +73,25 @@ Add to `.claude/settings.json` (or your project's `.claude/settings.json`):
 }
 ```
 
-Restart Claude Code. The model now has tools: `aether_remember`, `aether_search`, `aether_sanction`, `aether_fidelity`, `aether_context`. State persists across sessions in `~/.aether/mcp_state.json` (override with `AETHER_STATE_PATH`). Same config works for Cursor, Cline, Continue, Goose, Zed, LM Studio, or any MCP-speaking client.
+Restart Claude Code. The model now has the full v0.5.0 tool surface:
+
+| Tool | What it does |
+|------|--------------|
+| `aether_remember` | Store a fact. Auto-runs contradiction detection against the top-K most similar memories and adds CONTRADICTS edges where it finds clashes. |
+| `aether_search` | Hybrid embedding + substring search. Falls back to substring when `[ml]` is not installed. |
+| `aether_memory_detail` | Single-memory deep view with edges and history length. |
+| `aether_sanction` | Pre-action gate. Auto-grounds in substrate when belief_confidence is omitted. Force-rejects when a high-trust memory contradicts the action (factual or policy contradiction). |
+| `aether_fidelity` | Draft auditor. Computes belief_confidence from substrate grounding when caller omits it, instead of accepting whatever number the caller passed. |
+| `aether_correct` | Demote a memory's trust and cascade the drop to dependents via SUPPORTS / DERIVED_FROM edges. |
+| `aether_lineage` | "Why do I believe this." Walks SUPPORTS edges back to source memories. |
+| `aether_cascade_preview` | Dry-run a correction. See the blast radius before committing. |
+| `aether_belief_history` | How a memory's trust has evolved over time. |
+| `aether_contradictions` | List contradictions, optionally filtered by disposition (resolvable / held / evolving). |
+| `aether_resolve` | Resolve a contradiction: deprecate one side, hold both, or drop both. |
+| `aether_session_diff` | What changed since a given timestamp. New memories, recent corrections, new contradictions. |
+| `aether_context` | Dashboard snapshot. |
+
+State persists across sessions in `~/.aether/mcp_state.json` (override with `AETHER_STATE_PATH`). Trust history is in a side-car file. Same config works for Cursor, Cline, Continue, Goose, Zed, LM Studio, or any MCP-speaking client.
 
 ### Have your AI install it for you
 
@@ -203,7 +221,7 @@ if result.should_block:
 | `aether.contradiction` | shipped | Structural tension. Zero model calls. |
 | `aether.epistemics` | shipped | Belief backpropagation, trust evolution |
 | `aether.memory` | shipped | Slots, memory graph, BDG with cascade pressure |
-| `aether.mcp` | shipped (v0.4.0) | MCP server exposing `aether_remember`, `aether_search`, `aether_sanction`, `aether_fidelity`, `aether_context`. Persists state to disk. |
+| `aether.mcp` | shipped (v0.5.0) | 13-tool MCP server: substrate-grounded sanction + fidelity, embedding-aware search, contradiction detection on write, correction with BDG cascade, lineage, cascade preview, belief history, session diff. |
 | `aether.adapters` | planned | Cross-vendor adapters so the substrate stays the same regardless of which LLM is the mouth |
 
 See [ROADMAP.md](ROADMAP.md) for what's coming and what's intentionally out of scope.
