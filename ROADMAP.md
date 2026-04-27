@@ -2,6 +2,39 @@
 
 What is shipped today, what is coming next, and what is intentionally not in this repo.
 
+## Up next (v0.9 candidate)
+
+### Shortest-path retrieval — the RollerCoaster Tycoon idea
+
+In RCT, park guests without a map wander — they scan local intersections and pick paths heuristically. Guests *with* a map have a precomputed shortest route to their goal. Buying a map trades cash for search cost. Chris Sawyer wrote that pathfinder in assembly.
+
+The substrate today does the equivalent of "wandering" — `aether_search` returns top-K by cosine similarity, which is greedy local search over the embedding space. It can pull five memories that all overlap with each other and miss the one upstream memory that everything else depends on.
+
+What's missing: weighted shortest-path retrieval over the BDG.
+
+```
+aether_path(target_query, max_tokens=2000) -> [memory_id chain]
+```
+
+Implementation sketch:
+1. `target = aether_search(target_query, limit=1)` — pick the destination
+2. Run Dijkstra backward over BDG from `target`, edge weights = `(1 - trust) * token_estimate(memory)`
+3. Return the path that fits in `max_tokens`, ranked by total grounding gain
+
+Why this matters:
+- **Cost-weighted preload.** Compute the cheapest set of memories that grounds the query, then preload that set. Beats top-K because it follows dependency structure instead of just topical similarity.
+- **Map-purchase as meta-decision.** Cheap Dijkstra estimates "how much context do I need." If small, preload. If huge, fall back to wander mode (search-on-demand).
+- **Held contradictions = closed paths.** A memory in Belnap state `B` is a dead-end edge — Dijkstra naturally routes around it. That's exactly how a careful reasoner should behave.
+- **Per-task maps.** Each session keeps a preloaded subgraph for its current task. Task switches drop the old map, load a new one. Same pattern as RCT's per-guest map state.
+
+Adds <100 lines. Substrate has the graph already. New tool, new slash command, new chapter in the README that explains memory-as-map without any AI jargon.
+
+### Other v0.9 candidates
+
+- **Mutual-exclusion class registry expansion.** Today: 10 classes (cloud_provider, package_manager_*, database, etc.). Add: language runtimes, cache layers, queue systems, monitoring vendors, IaC tools.
+- **Held-contradiction state machine.** Active → Settling → Settled → Archived with policies for each transition.
+- **`aether_done_check` / `aether_done_shape`.** Declared success criteria, then grade a response against them.
+
 ## Shipped (v0.8.0)
 
 - **Claude Code plugin packaging.** Install with one command:
