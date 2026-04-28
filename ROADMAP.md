@@ -2,9 +2,23 @@
 
 What is shipped today, what is coming next, and what is intentionally not in this repo.
 
-## Up next (v0.9 candidate)
+## Shipped (v0.9.0)
 
-### Shortest-path retrieval — the RollerCoaster Tycoon idea
+### Shortest-path retrieval — the RollerCoaster Tycoon idea, now real
+
+`aether_path(query, max_tokens=2000, max_hops=8)` runs Dijkstra backward over the BDG from the top-1 cosine match. Edge weights = `(1 - trust) * token_estimate(text)` — high-trust memories are cheap, low-trust ones are expensive. CONTRADICTS edges are skipped entirely (held contradictions are closed paths). Returns the cheapest dependency chain that fits in `max_tokens`, ordered by Dijkstra distance from target.
+
+Three semantic-preserving guarantees the test suite locks in:
+
+1. Empty substrate → `method: "no_substrate"`, no errors.
+2. Target-only (no ancestors) → path is just the target.
+3. CONTRADICTS edges count toward `closed_paths` but never enter the path.
+
+163 tests pass.
+
+Plus a `/aether-path` slash command and the `aether_path` MCP tool exposed in v0.9.0 of the Claude Code plugin.
+
+## Up next
 
 In RCT, park guests without a map wander — they scan local intersections and pick paths heuristically. Guests *with* a map have a precomputed shortest route to their goal. Buying a map trades cash for search cost. Chris Sawyer wrote that pathfinder in assembly.
 

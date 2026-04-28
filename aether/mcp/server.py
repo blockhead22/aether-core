@@ -1,9 +1,10 @@
 """FastMCP server exposing the Aether belief substrate.
 
-Tools registered (v0.6.0):
+Tools registered (v0.9.0):
     Memory:
         aether_remember        write a fact (auto contradiction-detection)
         aether_search          embedding + substring hybrid search
+        aether_path            Dijkstra shortest-path retrieval over BDG
         aether_memory_detail   single-memory deep view
         aether_ingest_turn     pull high-signal facts from a conversation turn
     Governance:
@@ -276,6 +277,37 @@ def build_server(store: Optional[StateStore] = None) -> FastMCP:
         whose trust transitively supports the target.
         """
         return store.lineage(memory_id=memory_id, hops=hops)
+
+    @mcp.tool()
+    def aether_path(
+        query: str,
+        max_tokens: int = 2000,
+        max_hops: int = 8,
+    ) -> dict:
+        """Shortest-path retrieval (Dijkstra) — the substrate "park map".
+
+        Find the dependency chain that grounds the query at the cheapest
+        token cost. Walks the BDG backward from the top-1 cosine match
+        through SUPPORTS / DERIVED_FROM / RELATED_TO edges, weighted by
+        (1 - trust) * token_estimate(text). High-trust memories are
+        cheap to include; low-trust ones are expensive. CONTRADICTS
+        edges are skipped entirely (held contradictions = closed paths).
+
+        Use this instead of aether_search when you want to *preload* the
+        right context for a coding task, not just find topically similar
+        memories. The result is a chain of memories that fits in
+        max_tokens, ordered by Dijkstra distance from the target.
+
+        Args:
+            query: text to ground
+            max_tokens: budget for the returned chain (default 2000)
+            max_hops: safety limit on backward walk depth (default 8)
+        """
+        return store.compute_path(
+            query=query,
+            max_tokens=max_tokens,
+            max_hops=max_hops,
+        )
 
     @mcp.tool()
     def aether_cascade_preview(

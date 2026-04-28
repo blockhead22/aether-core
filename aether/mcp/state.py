@@ -1077,6 +1077,155 @@ class StateStore:
         }
 
     # ------------------------------------------------------------------
+    # Shortest-path retrieval (Dijkstra over BDG)
+    # ------------------------------------------------------------------
+
+    def compute_path(
+        self,
+        query: str,
+        max_tokens: int = 2000,
+        max_hops: int = 8,
+    ) -> Dict[str, Any]:
+        """Dijkstra shortest-path retrieval — the "park map" idea.
+
+        Find the dependency chain that grounds a query at the cheapest
+        token cost. Walks the BDG backward from the top-1 cosine match
+        through SUPPORTS / DERIVED_FROM / RELATED_TO edges, weighted
+        by `(1 - trust) * token_estimate(memory.text)` so high-trust
+        memories are "cheap" and low-trust ones are "expensive."
+        Skips CONTRADICTS edges entirely (held contradictions = closed
+        paths, exactly like a closed ride in RCT).
+
+        Returns the chain of memories that fits in `max_tokens`,
+        ordered by Dijkstra distance (closest to target first).
+
+        Args:
+            query: The text to ground. Top-1 cosine match becomes the
+                target node.
+            max_tokens: Token budget for the returned path. Memories
+                are added in distance order until the budget would be
+                exceeded.
+            max_hops: Safety limit on how far back to walk. Default 8.
+
+        Returns:
+            {
+                "query": str,
+                "target": {memory_id, text, trust, similarity},
+                "path": [{memory_id, text, trust, distance, depth}, ...],
+                "token_cost": int,
+                "token_budget": int,
+                "method": "dijkstra" | "no_target" | "no_substrate",
+                "closed_paths": int,  # CONTRADICTS edges encountered
+            }
+        """
+        # 1. Find target via cosine top-1
+        results = self.search(query, limit=1)
+        if not results:
+            return {
+                "query": query,
+                "target": None,
+                "path": [],
+                "token_cost": 0,
+                "token_budget": max_tokens,
+                "method": "no_substrate",
+                "closed_paths": 0,
+            }
+
+        target_hit = results[0]
+        target_id = target_hit["memory_id"]
+        target_node = self.graph.get_memory(target_id)
+        if target_node is None:
+            return {
+                "query": query,
+                "target": None,
+                "path": [],
+                "token_cost": 0,
+                "token_budget": max_tokens,
+                "method": "no_target",
+                "closed_paths": 0,
+            }
+
+        # 2. Dijkstra backward from target
+        import heapq
+        skip_edge_types = {EdgeType.CONTRADICTS.value, "CONTRADICTS"}
+        distances: Dict[str, float] = {target_id: 0.0}
+        depth_map: Dict[str, int] = {target_id: 0}
+        # heap entries: (cumulative_cost, depth, memory_id)
+        heap: List[Tuple[float, int, str]] = [(0.0, 0, target_id)]
+        visited: set = set()
+        closed_paths = 0
+
+        while heap:
+            cost, depth, node_id = heapq.heappop(heap)
+            if node_id in visited:
+                continue
+            visited.add(node_id)
+            if depth >= max_hops:
+                continue
+            for pred, _, edata in self.graph.graph.in_edges(node_id, data=True):
+                etype = edata.get("edge_type", "supports")
+                if etype in skip_edge_types:
+                    closed_paths += 1
+                    continue
+                pred_node = self.graph.get_memory(pred)
+                if pred_node is None:
+                    continue
+                trust = pred_node.trust
+                tokens = _estimate_tokens(pred_node.text)
+                # Edge weight: low trust + long text = expensive
+                edge_weight = (1.0 - trust) * tokens + 1.0
+                new_cost = cost + edge_weight
+                if new_cost < distances.get(pred, float("inf")):
+                    distances[pred] = new_cost
+                    depth_map[pred] = depth + 1
+                    heapq.heappush(heap, (new_cost, depth + 1, pred))
+
+        # 3. Build budget-fitting path. Always include target.
+        # Order ancestors by Dijkstra distance (closest to target first).
+        ordered = sorted(
+            distances.keys(),
+            key=lambda mid: (distances[mid], -self.graph.get_memory(mid).trust),
+        )
+        path: List[Dict[str, Any]] = []
+        used_tokens = 0
+        for mid in ordered:
+            node = self.graph.get_memory(mid)
+            if node is None:
+                continue
+            tokens = _estimate_tokens(node.text)
+            if path and used_tokens + tokens > max_tokens:
+                # Budget exhausted — stop adding (but keep target which
+                # was added first)
+                continue
+            path.append({
+                "memory_id": mid,
+                "text": node.text,
+                "trust": node.trust,
+                "belnap_state": getattr(node, "belnap_state", "T"),
+                "distance": round(distances[mid], 3),
+                "depth": depth_map.get(mid, 0),
+                "token_cost": tokens,
+                "is_target": mid == target_id,
+            })
+            used_tokens += tokens
+
+        return {
+            "query": query,
+            "target": {
+                "memory_id": target_id,
+                "text": target_node.text,
+                "trust": target_node.trust,
+                "similarity": target_hit.get("similarity"),
+            },
+            "path": path,
+            "token_cost": used_tokens,
+            "token_budget": max_tokens,
+            "method": "dijkstra",
+            "closed_paths": closed_paths,
+            "path_length": len(path),
+        }
+
+    # ------------------------------------------------------------------
     # Contradictions and resolution
     # ------------------------------------------------------------------
 
@@ -1337,3 +1486,14 @@ def _extract_source(tags: List[str]) -> str:
         if t.startswith("source:"):
             return t.split(":", 1)[1]
     return "unknown"
+
+
+def _estimate_tokens(text: str) -> int:
+    """Rough token estimate: ~4 chars per token (GPT-style tokenizer
+    rule-of-thumb). Avoids pulling tiktoken as a hard dependency.
+    Returns at least 1 so empty edge costs don't collapse to zero.
+    """
+    if not text:
+        return 1
+    # Char-based estimate is within ~15% of tiktoken for English prose.
+    return max(1, len(text) // 4)
