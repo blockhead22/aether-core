@@ -2,6 +2,72 @@
 
 What is shipped today, what is coming next, and what is intentionally not in this repo.
 
+## Shipped (v0.9.3)
+
+### Fidelity catches methodological overclaims, not just factual contradictions
+
+The first end-to-end substrate-assisted dev test (2026-04-28) seeded a
+high-trust memory: "the v1-vs-v3 CogniMap conclusion is confounded; the
+'CALIC is bad' takeaway is unsupported." The agent then drafted "v3 was
+worse than v1, so CALIC is bad" and called `aether_fidelity`. The tool
+returned `gap_score: 0.0, action: PASS, supporting_memories: [],
+contradicting_memories: []`. It missed entirely.
+
+Diagnosis: the existing contradiction detection (StructuralTensionMeter
++ asymmetric-negation + policy + mutex) is wired around *factual* slot
+clashes — Seattle vs Portland, AWS vs GCP. The methodological-gap
+memory has different slots than the draft (no slot conflict), so the
+meter classified them as unrelated and the memory dropped out. Same
+class of miss as the v0.9.0 `aether_path` no-op: the substrate had the
+right knowledge; the verdict-producing path didn't ask the right question.
+
+Fix:
+
+1. **Two new helpers in `aether/mcp/state.py`**:
+   - `_has_inference_marker(text)` — recognizes draft inference markers
+     (`so X`, `therefore Y`, `thus`, `means that`, `proves`, `implies`,
+     `because`, `since`, etc.). Conservative — leading whitespace
+     required so substrings inside larger words don't false-match.
+   - `_has_methodological_signal(memory_text, source)` — recognizes
+     methodological-warning language (`unsupported`, `doesn't follow`,
+     `missing cell`, `confounded`, `non-causal`, `lazy reading`,
+     `methodological gap`) OR the explicit `source:methodological_gap`
+     tag at write time.
+
+2. **`compute_grounding` adds a `methodological_concerns` channel.**
+   Fires when the draft has an inference marker AND a topically-similar
+   memory carries methodological-warning language or the
+   methodological-gap source tag. Surfaces in the output as a separate
+   list from `contradict` so downstream callers can show "the substrate
+   flagged this as a methodological overclaim" distinctly. Reduces
+   `belief_confidence` the same way factual contradictions do, so
+   `gap_score` and `severity` reflect the concern automatically.
+
+3. **Methodological check runs BEFORE factual contradiction check.**
+   When both fire on the same memory (the methodological-gap memory
+   often *also* contains negation cues like "unsupported"), the
+   methodological framing wins. It's more informative — it tells the
+   user *why* the inference is flawed, not just *that* a memory
+   disagrees.
+
+4. **`aether_fidelity` and `aether_sanction` expose the new field.**
+   `aether_sanction` adds a HOLD-when-APPROVE rule: if the baseline
+   verdict would have been APPROVE but a high-trust methodological
+   concern fires, the verdict downgrades to HOLD. Methodological
+   overclaims are about the form of a claim, not the action itself —
+   the right response is "review this methodology before proceeding,"
+   not blanket REJECT.
+
+Critical regression test: `test_grounding_surfaces_methodological_concern`
+seeds the exact memory and queries the exact draft from the v0.9.1
+test report. The methodological concern surfaces; `belief_confidence`
+drops below the 0.4 neutral baseline. Plus 24 supporting tests covering
+the helpers, false-positive guards (dissimilar topics, drafts without
+inference markers), and the MCP tool surface.
+
+222 tests pass (was 197). 25 new tests in
+`test_v093_methodological_overclaim.py`.
+
 ## Shipped (v0.9.2)
 
 ### Governance tier no longer wedges on cold encoder

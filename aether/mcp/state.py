@@ -97,6 +97,68 @@ POLICY_CONTRA_MIN_SIMILARITY = 0.45
 POLICY_CONTRA_MIN_TRUST = 0.7
 
 
+# Methodological overclaim detection (v0.9.3, Layer 2).
+#
+# Fidelity catches FACTUAL contradictions ("Seattle vs Portland") via the
+# StructuralTensionMeter. It misses METHODOLOGICAL overclaims —
+# "v3 was worse than v1, so CALIC is bad" when memory says
+# "this conclusion is unsupported because v1-vs-v3 confounded predictor
+# and strategy map." The slot extractions don't conflict; the meter sees
+# them as unrelated.
+#
+# Layer 2 fix: a separate channel that fires when the draft makes an
+# inference AND a topically-similar memory contains methodological-warning
+# language (or carries the `source:methodological_gap` tag). Surfaces in
+# compute_grounding's output as `methodological_concerns`. Also reduces
+# belief_confidence so gap_score / severity reflect the concern.
+
+INFERENCE_MARKERS = (
+    " so ", " therefore ", " thus ", " hence ",
+    " means that ", " proves ", " shows that ",
+    " implies ", " demonstrates that ",
+    " concludes ", " conclusion is ",
+    " because ", " since ",
+    "=>",  # informal logical connective sometimes used in code comments
+)
+
+METHODOLOGICAL_GAP_SIGNALS = (
+    "unsupported", "not supported",
+    "doesn't follow", "does not follow",
+    "missing cell", "confounded", "confounding",
+    "non-causal", "non causal",
+    "lazy reading", "lazy read",
+    "incorrect inference", "this conclusion is",
+    "the conclusion that", "methodological gap",
+    "methodological concern", "two variables changed",
+    "experimental matrix", "design flaw",
+)
+
+METHODOLOGICAL_GAP_SOURCE = "methodological_gap"
+
+
+def _has_inference_marker(text: str) -> bool:
+    """True if the text makes an inference (claims X entails Y).
+
+    Conservative: leading whitespace required to avoid matching substrings
+    inside larger words (e.g. "boson" should not match " so ").
+    """
+    padded = " " + text.lower() + " "
+    return any(cue in padded for cue in INFERENCE_MARKERS)
+
+
+def _has_methodological_signal(text: str, source: Optional[str] = None) -> bool:
+    """True if the memory carries methodological-warning language.
+
+    Two pathways:
+      1. `source == "methodological_gap"` — explicit tag set at write time.
+      2. Memory text contains any of METHODOLOGICAL_GAP_SIGNALS.
+    """
+    if source and METHODOLOGICAL_GAP_SOURCE in source.lower():
+        return True
+    t = text.lower()
+    return any(sig in t for sig in METHODOLOGICAL_GAP_SIGNALS)
+
+
 def _looks_like_prohibition(text: str) -> bool:
     t = text.lower()
     return any(cue in t for cue in PROHIBITION_CUES)
@@ -762,6 +824,7 @@ class StateStore:
                 "belief_confidence": 0.3,  # neutral-low when substrate empty
                 "support": [],
                 "contradict": [],
+                "methodological_concerns": [],
                 "method": "empty",
             }
 
@@ -773,11 +836,19 @@ class StateStore:
                 "belief_confidence": 0.3,
                 "support": [],
                 "contradict": [],
+                "methodological_concerns": [],
                 "method": method,
             }
 
+        # v0.9.3 (Layer 2): if the draft makes an inference, we'll check each
+        # candidate memory for methodological-warning language. This is the
+        # channel that catches "v3 was worse than v1, so CALIC is bad" against
+        # a memory that says "the v1-vs-v3 conclusion is unsupported."
+        draft_has_inference = _has_inference_marker(text)
+
         support: List[Dict[str, Any]] = []
         contradict: List[Dict[str, Any]] = []
+        methodological: List[Dict[str, Any]] = []
         weights = []
 
         for hit in kept:
@@ -826,7 +897,37 @@ class StateStore:
             # Mutual-exclusion: "we use AWS" vs "we use GCP"
             mutex_hit = detect_mutex_conflict(hit["text"], text)
 
-            if is_factual_contradict or is_policy_contradict or is_asymm_neg or mutex_hit:
+            # v0.9.3 (Layer 2): methodological overclaim check. Independent
+            # of slot-conflict detection. Fires when:
+            #   1. The draft makes an inference (`so X`, `therefore Y`, etc.)
+            #   2. The memory carries methodological-warning language OR is
+            #      tagged source:methodological_gap.
+            #   3. Topical similarity threshold passed (already filtered by
+            #      GROUNDING_MIN_SCORE above).
+            #
+            # Checked BEFORE factual contradiction because a methodological
+            # memory often also looks like a negation-asymmetry contradiction
+            # (it contains words like "unsupported" / "doesn't follow"). The
+            # methodological framing is more informative — it tells the user
+            # WHY the inference is flawed, not just THAT a memory disagrees.
+            # When both fire, methodological wins.
+            is_methodological = (
+                draft_has_inference and
+                _has_methodological_signal(hit["text"], hit.get("source"))
+            )
+
+            if is_methodological:
+                methodological.append({
+                    **hit,
+                    "kind": "methodological",
+                    "concern": (
+                        "Draft makes an inference; memory cautions that "
+                        "this conclusion is unsupported / confounded / "
+                        "premature."
+                    ),
+                    "tension_score": round(tr.tension_score, 3),
+                })
+            elif is_factual_contradict or is_policy_contradict or is_asymm_neg or mutex_hit:
                 kind = "factual"
                 if is_asymm_neg and not is_factual_contradict:
                     kind = "negation_asymmetry"
@@ -857,11 +958,12 @@ class StateStore:
                 support.append({**hit, "tension_score": round(tr.tension_score, 3)})
                 weights.append(hit["trust"])
 
-        if not support and not contradict:
+        if not support and not contradict and not methodological:
             return {
                 "belief_confidence": 0.4,
                 "support": [],
                 "contradict": [],
+                "methodological_concerns": [],
                 "method": method,
             }
 
@@ -875,12 +977,21 @@ class StateStore:
             min(0.4, c["trust"] * c.get("tension_score", 0.5))
             for c in contradict
         )
-        belief = max(0.0, min(1.0, base - contradiction_penalty))
+        # v0.9.3: methodological concerns reduce belief_confidence the
+        # same way factual contradictions do, so gap_score / severity
+        # naturally reflect the concern. The signals are still surfaced
+        # in their own channel for transparency.
+        methodological_penalty = sum(
+            min(0.4, m["trust"] * 0.7)
+            for m in methodological
+        )
+        belief = max(0.0, min(1.0, base - contradiction_penalty - methodological_penalty))
 
         return {
             "belief_confidence": round(belief, 3),
             "support": support,
             "contradict": contradict,
+            "methodological_concerns": methodological,
             "method": method,
         }
 

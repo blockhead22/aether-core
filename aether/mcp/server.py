@@ -156,7 +156,11 @@ def build_server(store: Optional[StateStore] = None) -> FastMCP:
             effective_belief = grounding["belief_confidence"]
             grounded = True
         else:
-            grounding = {"support": [], "contradict": [], "method": "caller_supplied"}
+            grounding = {
+                "support": [], "contradict": [],
+                "methodological_concerns": [],
+                "method": "caller_supplied",
+            }
             effective_belief = belief_confidence
             grounded = False
 
@@ -177,6 +181,17 @@ def build_server(store: Optional[StateStore] = None) -> FastMCP:
             verdict = "REJECT"
             tier = GovernanceTier.ESCALATE
 
+        # v0.9.3 (Layer 2): high-trust methodological concerns force HOLD.
+        # We don't REJECT on these — methodological overclaims are about the
+        # form of a claim, and the right response is to push back / hedge,
+        # not to block the action outright. HOLD signals "review this
+        # methodology before proceeding."
+        methodological = grounding.get("methodological_concerns", [])
+        if any(m["trust"] >= 0.7 for m in methodological) and verdict == "APPROVE":
+            verdict = "HOLD"
+            if tier == GovernanceTier.SAFE:
+                tier = GovernanceTier.FLAG
+
         return {
             "verdict": verdict,
             "tier": tier.value,
@@ -186,6 +201,7 @@ def build_server(store: Optional[StateStore] = None) -> FastMCP:
             "grounded_in_substrate": grounded,
             "supporting_memories": grounding.get("support", [])[:3],
             "contradicting_memories": contradicting[:3],
+            "methodological_concerns": methodological[:3],
             "annotations": [
                 {
                     "agent": a.agent,
@@ -217,7 +233,11 @@ def build_server(store: Optional[StateStore] = None) -> FastMCP:
             effective_belief = grounding["belief_confidence"]
             grounded = True
         else:
-            grounding = {"support": [], "contradict": [], "method": "caller_supplied"}
+            grounding = {
+                "support": [], "contradict": [],
+                "methodological_concerns": [],
+                "method": "caller_supplied",
+            }
             effective_belief = belief_confidence
             grounded = False
 
@@ -236,6 +256,12 @@ def build_server(store: Optional[StateStore] = None) -> FastMCP:
             "grounding_method": grounding.get("method", "caller_supplied"),
             "supporting_memories": grounding.get("support", [])[:3],
             "contradicting_memories": grounding.get("contradict", [])[:3],
+            # v0.9.3 (Layer 2): methodological overclaims are surfaced in a
+            # separate channel from factual contradictions. The substrate
+            # had factual contradiction-detection from v0.5; this catches
+            # claims like "v3 was worse than v1, so CALIC is bad" against
+            # a memory that says "the v1-vs-v3 conclusion is unsupported."
+            "methodological_concerns": grounding.get("methodological_concerns", [])[:3],
             "factors": verdict.contributing_factors,
             "law": verdict.law,
         }
