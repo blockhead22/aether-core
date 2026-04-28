@@ -78,6 +78,15 @@ SENTINEL_BELIEF_CONF = 0.5  # Treat 0.5 as "caller didn't supply real value"
 TENSION_TOP_K = 8
 TENSION_CONFLICT_THRESHOLD = 0.55
 
+# Auto-link threshold for RELATED_TO edges (v0.9.1 fix).
+# In the same top-K candidate scan that catches contradictions, any
+# candidate above this similarity that did NOT trigger a CONTRADICTS
+# edge gets a bidirectional RELATED_TO edge. Without this, the MCP
+# write surface produces orphan nodes and aether_path returns only
+# the target — that's the bug v0.9.0 shipped.
+# Override per-process with $AETHER_AUTO_LINK_THRESHOLD.
+AUTO_LINK_THRESHOLD = float(os.environ.get("AETHER_AUTO_LINK_THRESHOLD", "0.7"))
+
 # Policy contradiction detection (for sanction-time gating).
 # StructuralTensionMeter is fact-vs-fact and misses command-vs-prohibition,
 # so we add a lightweight imperative/prohibition cross-check.
@@ -578,6 +587,26 @@ class StateStore:
             mutex_hit = detect_mutex_conflict(other.text, text)
 
             if not (slot_conflict or asymm_neg or policy or mutex_hit):
+                # No contradiction. v0.9.1: if this candidate is similar
+                # enough, wire a RELATED_TO edge so aether_path has
+                # something to walk. Bidirectional because RELATED_TO is
+                # semantically symmetric (Dijkstra walks in_edges).
+                link_sim = result.supporting_signals.get(
+                    "embedding_similarity", sim,
+                )
+                if link_sim >= AUTO_LINK_THRESHOLD:
+                    metadata = {
+                        "similarity": float(round(link_sim, 4)),
+                        "auto": True,
+                    }
+                    self.graph.add_edge(
+                        other.memory_id, memory_id,
+                        EdgeType.RELATED_TO, metadata=metadata,
+                    )
+                    self.graph.add_edge(
+                        memory_id, other.memory_id,
+                        EdgeType.RELATED_TO, metadata=metadata,
+                    )
                 continue
 
             disposition = self._tension_to_disposition(result)
@@ -652,6 +681,138 @@ class StateStore:
         if result.action == TensionAction.FLAG_FOR_REVIEW:
             return Disposition.HELD
         return Disposition.EVOLVING
+
+    # ------------------------------------------------------------------
+    # Explicit edge creation (v0.9.1)
+    # ------------------------------------------------------------------
+
+    _MANUAL_EDGE_TYPES = (
+        EdgeType.SUPPORTS,
+        EdgeType.DERIVED_FROM,
+        EdgeType.RELATED_TO,
+    )
+
+    def add_link(
+        self,
+        source_id: str,
+        target_id: str,
+        edge_type: str = "supports",
+        weight: float = 0.7,
+        reason: str = "",
+    ) -> Dict[str, Any]:
+        """Add a typed edge between two existing memories.
+
+        edge_type is validated against EdgeType. Only SUPPORTS,
+        DERIVED_FROM, and RELATED_TO are user-creatable here —
+        CONTRADICTS is added by the contradiction detection path on
+        write, and SUPERSEDES is added by aether_resolve.
+
+        SUPPORTS / DERIVED_FROM are directional (source → target).
+        RELATED_TO is symmetric and added in both directions so
+        Dijkstra walks either way.
+        """
+        if source_id == target_id:
+            raise ValueError("source_id and target_id must differ")
+        try:
+            et = EdgeType(edge_type.lower())
+        except ValueError:
+            valid = [e.value for e in self._MANUAL_EDGE_TYPES]
+            raise ValueError(
+                f"invalid edge_type {edge_type!r}; must be one of {valid}"
+            )
+        if et not in self._MANUAL_EDGE_TYPES:
+            raise ValueError(
+                f"{et.value!r} edges are managed automatically; use "
+                f"aether_remember (contradicts) or aether_resolve (supersedes)"
+            )
+        if self.graph.get_memory(source_id) is None:
+            raise KeyError(f"unknown source memory_id: {source_id}")
+        if self.graph.get_memory(target_id) is None:
+            raise KeyError(f"unknown target memory_id: {target_id}")
+
+        metadata = {"weight": float(weight), "auto": False}
+        if reason:
+            metadata["reason"] = reason
+
+        self.graph.add_edge(source_id, target_id, et, metadata=metadata)
+        bidirectional = et == EdgeType.RELATED_TO
+        if bidirectional:
+            self.graph.add_edge(target_id, source_id, et, metadata=metadata)
+        self.save()
+
+        return {
+            "source_id": source_id,
+            "target_id": target_id,
+            "edge_type": et.value,
+            "weight": weight,
+            "reason": reason,
+            "bidirectional": bidirectional,
+        }
+
+    def backfill_edges(
+        self,
+        threshold: Optional[float] = None,
+    ) -> Dict[str, Any]:
+        """Retroactively wire RELATED_TO edges into pre-v0.9.1 substrates.
+
+        For each pair of memories with similarity >= threshold AND no
+        existing edge between them in either direction, add a
+        bidirectional RELATED_TO edge. Pairs that already have any
+        edge (CONTRADICTS, SUPPORTS, etc.) are skipped — backfill only
+        wires orphans.
+
+        Args:
+            threshold: cosine threshold (defaults to AUTO_LINK_THRESHOLD)
+        """
+        if threshold is None:
+            threshold = AUTO_LINK_THRESHOLD
+        memories = list(self.graph.all_memories())
+        added = 0
+        skipped_existing_edge = 0
+        skipped_low_sim = 0
+        compared = 0
+        for i, a in enumerate(memories):
+            a_emb = self.graph.get_embedding(a.memory_id)
+            for b in memories[i + 1:]:
+                compared += 1
+                if (self.graph.graph.has_edge(a.memory_id, b.memory_id) or
+                        self.graph.graph.has_edge(b.memory_id, a.memory_id)):
+                    skipped_existing_edge += 1
+                    continue
+                b_emb = self.graph.get_embedding(b.memory_id)
+                if a_emb is not None and b_emb is not None:
+                    sim = self._cosine(a_emb, b_emb)
+                else:
+                    ta = set(a.text.lower().split())
+                    tb = set(b.text.lower().split())
+                    sim = len(ta & tb) / max(len(ta | tb), 1)
+                if sim < threshold:
+                    skipped_low_sim += 1
+                    continue
+                metadata = {
+                    "similarity": float(round(sim, 4)),
+                    "auto": True,
+                    "source": "backfill",
+                }
+                self.graph.add_edge(
+                    a.memory_id, b.memory_id,
+                    EdgeType.RELATED_TO, metadata=metadata,
+                )
+                self.graph.add_edge(
+                    b.memory_id, a.memory_id,
+                    EdgeType.RELATED_TO, metadata=metadata,
+                )
+                added += 1
+        if added:
+            self.save()
+        return {
+            "added": added,
+            "skipped_existing_edge": skipped_existing_edge,
+            "skipped_low_sim": skipped_low_sim,
+            "compared_pairs": compared,
+            "threshold": threshold,
+            "total_memories": len(memories),
+        }
 
     # ------------------------------------------------------------------
     # Search

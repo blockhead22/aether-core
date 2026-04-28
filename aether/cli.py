@@ -1,10 +1,11 @@
 """`aether` CLI: scaffold, inspect, and validate a substrate.
 
 Subcommands:
-    aether init       create .aether/ in the current directory
-    aether status     show substrate stats
-    aether check      run fidelity on a commit message file (pre-commit hook)
-    aether contradictions    list current contradictions
+    aether init             create .aether/ in the current directory
+    aether status           show substrate stats
+    aether check            run fidelity on a commit message file (pre-commit hook)
+    aether contradictions   list current contradictions
+    aether backfill-edges   retroactively wire RELATED_TO edges (v0.9.1)
 
 Each subcommand is a thin wrapper over `aether.mcp.state.StateStore`.
 """
@@ -239,6 +240,84 @@ def cmd_check(args) -> int:
 
 
 # ---------------------------------------------------------------------------
+# backfill-edges (v0.9.1)
+# ---------------------------------------------------------------------------
+
+def cmd_backfill_edges(args) -> int:
+    """Wire RELATED_TO edges into substrates built before v0.9.1.
+
+    v0.9.0 had a bug: aether_remember produced orphan nodes. Without
+    SUPPORTS / RELATED_TO edges, aether_path always returned just the
+    target. This command retroactively wires RELATED_TO edges between
+    similar memories so existing substrates benefit from aether_path
+    without re-ingesting.
+    """
+    store = _make_store()
+    if store._encoder is not None and not args.no_wait:
+        # Block on warmup so similarity uses real embeddings, not the
+        # token-overlap fallback. Backfill is a one-shot operation —
+        # the wait is acceptable.
+        try:
+            store._encoder._load()
+        except Exception as e:
+            print(f"warning: encoder load failed ({e}); using token-overlap fallback",
+                  file=sys.stderr)
+
+    threshold = args.threshold
+    if threshold is None:
+        from aether.mcp.state import AUTO_LINK_THRESHOLD
+        threshold = AUTO_LINK_THRESHOLD
+
+    if args.dry_run:
+        # Count without writing by temporarily monkey-patching the
+        # graph add_edge. Simpler: fork the math here.
+        memories = list(store.graph.all_memories())
+        would_add = 0
+        compared = 0
+        for i, a in enumerate(memories):
+            a_emb = store.graph.get_embedding(a.memory_id)
+            for b in memories[i + 1:]:
+                compared += 1
+                if (store.graph.graph.has_edge(a.memory_id, b.memory_id) or
+                        store.graph.graph.has_edge(b.memory_id, a.memory_id)):
+                    continue
+                b_emb = store.graph.get_embedding(b.memory_id)
+                if a_emb is not None and b_emb is not None:
+                    sim = store._cosine(a_emb, b_emb)
+                else:
+                    ta = set(a.text.lower().split())
+                    tb = set(b.text.lower().split())
+                    sim = len(ta & tb) / max(len(ta | tb), 1)
+                if sim >= threshold:
+                    would_add += 1
+        out = {
+            "dry_run": True,
+            "would_add": would_add,
+            "compared_pairs": compared,
+            "threshold": threshold,
+            "total_memories": len(memories),
+        }
+    else:
+        out = store.backfill_edges(threshold=threshold)
+
+    if args.format == "json":
+        print(json.dumps(out, indent=2))
+    else:
+        if args.dry_run:
+            print(f"backfill (dry-run): would add {out['would_add']} RELATED_TO "
+                  f"edges across {out['total_memories']} memories "
+                  f"(threshold={out['threshold']:.2f})")
+        else:
+            print(f"backfill: added {out['added']} RELATED_TO edges "
+                  f"across {out['total_memories']} memories "
+                  f"(threshold={out['threshold']:.2f})")
+            print(f"  compared pairs       : {out['compared_pairs']}")
+            print(f"  skipped (had edge)   : {out['skipped_existing_edge']}")
+            print(f"  skipped (low sim)    : {out['skipped_low_sim']}")
+    return 0
+
+
+# ---------------------------------------------------------------------------
 # main
 # ---------------------------------------------------------------------------
 
@@ -281,6 +360,20 @@ def build_parser() -> argparse.ArgumentParser:
                          choices=["SAFE", "ELEVATED", "CRITICAL"],
                          help="exit non-zero at this severity or above")
     p_check.set_defaults(func=cmd_check)
+
+    # backfill-edges (v0.9.1)
+    p_back = sub.add_parser(
+        "backfill-edges",
+        help="retroactively wire RELATED_TO edges (v0.9.1 fix for v0.9.0 substrates)",
+    )
+    p_back.add_argument("--threshold", type=float, default=None,
+                        help="similarity threshold (default: AUTO_LINK_THRESHOLD)")
+    p_back.add_argument("--dry-run", action="store_true",
+                        help="count what would be added without writing")
+    p_back.add_argument("--no-wait", action="store_true",
+                        help="skip blocking on encoder warmup (uses token-overlap fallback)")
+    p_back.add_argument("--format", choices=["text", "json"], default="text")
+    p_back.set_defaults(func=cmd_backfill_edges)
 
     return p
 

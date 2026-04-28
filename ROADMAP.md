@@ -2,6 +2,48 @@
 
 What is shipped today, what is coming next, and what is intentionally not in this repo.
 
+## Shipped (v0.9.1)
+
+### aether_path was a no-op on substrates built through MCP — now fixed
+
+v0.9.0 shipped Dijkstra retrieval over the BDG, but the MCP write
+surface (`aether_remember`, `aether_ingest_turn`, `add_memory`)
+only ever produced CONTRADICTS edges. SUPPORTS / DERIVED_FROM /
+RELATED_TO had no creation path from MCP. So `aether_path` walked
+backward from the target, found no edges to traverse, and returned
+just the target alone — a no-op in production. The tests passed
+because every multi-node test in `test_path_v09.py` manually called
+`store.graph.add_edge(...)` to construct a chain. Public-API
+behavior was never asserted.
+
+Fix:
+
+1. **Auto-link RELATED_TO on write.** In the same top-K candidate
+   scan that detects contradictions, any candidate above
+   `AUTO_LINK_THRESHOLD` (default 0.7, override with
+   `$AETHER_AUTO_LINK_THRESHOLD`) that did NOT trigger a
+   contradiction gets a bidirectional RELATED_TO edge. Reuses the
+   existing candidate set — no second scan, no second cost.
+   Contradicting pairs are excluded by design (no both-edges case).
+2. **`aether_link` MCP tool.** Explicit edge creation when the
+   similarity heuristic won't catch a relationship —
+   `aether_link(source_id, target_id, edge_type, weight, reason)`.
+   `edge_type` is validated against the EdgeType enum;
+   CONTRADICTS / SUPERSEDES are rejected (those have their own
+   detection / resolution paths). SUPPORTS / DERIVED_FROM are
+   directional; RELATED_TO is bidirectional.
+3. **`aether backfill-edges` CLI.** For substrates built on v0.9.0
+   that have orphan nodes — retroactively walks all pairs and
+   wires RELATED_TO edges for those above threshold. Idempotent
+   (skips pairs that already have any edge). Supports `--dry-run`.
+
+Critical regression test added: writes two memories via the public
+`aether_remember` API only (no manual `graph.add_edge`) and asserts
+`aether_path` returns a path with more than one node. That test
+should have existed in v0.9.0.
+
+189 tests pass (was 163). 26 new tests in `test_v091_auto_link.py`.
+
 ## Shipped (v0.9.0)
 
 ### Shortest-path retrieval — the RollerCoaster Tycoon idea, now real

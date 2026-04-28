@@ -1,8 +1,9 @@
 """FastMCP server exposing the Aether belief substrate.
 
-Tools registered (v0.9.0):
+Tools registered (v0.9.1):
     Memory:
-        aether_remember        write a fact (auto contradiction-detection)
+        aether_remember        write a fact (auto contradiction-detection
+                               + auto RELATED_TO link above similarity threshold)
         aether_search          embedding + substring hybrid search
         aether_path            Dijkstra shortest-path retrieval over BDG
         aether_memory_detail   single-memory deep view
@@ -17,6 +18,7 @@ Tools registered (v0.9.0):
         aether_belief_history  trust-evolution log per memory
         aether_contradictions  list contradictions, optional disposition filter
         aether_resolve         resolve a contradiction (deprecate / hold / drop)
+        aether_link            explicit SUPPORTS / DERIVED_FROM / RELATED_TO edge (v0.9.1)
         aether_session_diff    what changed since a given timestamp
     Introspection:
         aether_context         dashboard snapshot
@@ -366,6 +368,43 @@ def build_server(store: Optional[StateStore] = None) -> FastMCP:
             keep=keep,
             reason=reason,
         )
+
+    @mcp.tool()
+    def aether_link(
+        source_id: str,
+        target_id: str,
+        edge_type: str = "supports",
+        weight: float = 0.7,
+        reason: str = "",
+    ) -> dict:
+        """Add a typed edge between two existing memories (v0.9.1).
+
+        Use this to wire the BDG explicitly when you know two memories
+        depend on each other in a way the auto-link similarity heuristic
+        won't catch. aether_path walks SUPPORTS / DERIVED_FROM /
+        RELATED_TO edges, so adding them here makes the dependency
+        chain visible to the park-map retrieval.
+
+        edge_type: one of "supports", "derived_from", "related_to".
+            CONTRADICTS is added by aether_remember on write;
+            SUPERSEDES is added by aether_resolve.
+        weight: edge weight metadata (informational; Dijkstra uses
+            (1 - trust) * tokens, not this).
+        reason: optional human-readable note.
+
+        SUPPORTS / DERIVED_FROM are directional (source → target).
+        RELATED_TO is symmetric and added in both directions.
+        """
+        try:
+            return store.add_link(
+                source_id=source_id,
+                target_id=target_id,
+                edge_type=edge_type,
+                weight=weight,
+                reason=reason,
+            )
+        except (ValueError, KeyError) as e:
+            return {"error": str(e), "type": e.__class__.__name__}
 
     @mcp.tool()
     def aether_session_diff(since: float) -> dict:
