@@ -2,6 +2,99 @@
 
 What is shipped today, what is coming next, and what is intentionally not in this repo.
 
+## Shipped (v0.11.0)
+
+### Composable pattern primitives + the quantitative known-gap closes
+
+Up through v0.10.x every contradiction detector was hand-coded regex.
+That worked for narrow stable patterns but left visible gaps:
+
+- The `known_gap_quantitative` category in the v0.9.4 calibration bench
+  documented three failing cases (Python 3.10 vs 3.8, 222 vs 99 tests,
+  2026-04-27 vs 2025-01-15) the slot extractor couldn't catch because
+  they're not categorical conflicts.
+- Cold-mode policy / negation_asymmetry stuck at 0% because the gates
+  needed embedding similarity.
+- New pattern types required code changes; no composability.
+
+v0.11 adds a **composable primitives module** (`aether/patterns.py`)
+that supplements regex with four building blocks:
+
+1. **`token_overlap`** — Jaccard on token sets. Symmetric, bounded,
+   cold-mode safe. Useful as a topical-relevance gate.
+2. **`shape`** — typed-pattern detection. Recognizes versions
+   (`3.10`, `3.8`), dates (`2026-04-27`), integers (`222`, `99`),
+   floats. Ships with comparators per type:
+   `numeric_tuple`, `chronological`, `magnitude`, `categorical`. Returns
+   `score=1.0` on conflict, `0.5` on agreement, `0.0` on no shared
+   shape. **This is what closes `known_gap_quantitative`** — and it
+   works without embeddings.
+3. **`substring_window`** — multiple substrings within N tokens.
+   Useful for catching multi-clause patterns like inference + claim
+   in the same sentence.
+4. **`ncd`** — normalized compression distance via gzip. The
+   "gzip beats BERT" approach as a substrate-resident similarity
+   primitive. No model, no training.
+
+Each primitive returns a `MatchResult` with `score` and `evidence`.
+A `combined_score()` helper ensembles results with weighted average.
+
+**Wiring**: shape detection is now a fifth contradiction signal
+alongside slot conflict, asymmetric negation, policy, and mutex.
+Fires in both `_detect_and_record_tensions` (write path) and
+`compute_grounding` (read path). Conflicting `kind="quantitative"`
+edges are added with rule trace `shape:version:3.10<>3.8` etc.
+
+**Calibration bench impact**:
+
+| Mode | Before (v0.10.1) | After (v0.11.0) |
+|---|---|---|
+| Warm | 26/26 blocker pass (3 known_gap fail) | **29/29 blocker pass, no remaining known gaps** |
+| Cold | 16/26 (61.5%) | **19/29 (65.5%)**; quantitative now passes cold too |
+
+**factual_contradiction in cold mode** went 0% → 60% (the three
+quantitative cases now fire without needing embeddings). Other
+cold-mode gaps (policy, negation_asymmetry — which still need
+embedding-similarity gates) deferred to a future release that
+similarly replaces those gates with regex-free primitives.
+
+**300 tests pass** (was 268). 32 new in
+`tests/test_v110_pattern_primitives.py` covering each primitive
+in isolation, comparator behavior per shape type, integration on
+both write and read paths, cold-mode safety, and false-positive
+guards (no shape → no firing; same value → agreement, not conflict).
+
+### Lab framing recorded for v0.11+ research
+
+Tonight's research direction synthesized into one thesis: **meaning
+emerges from the substrate's contradiction structure and lived
+trajectory, not from labels or training.** Five interlocking
+ideas saved as substrate memory `m1777362414276_1` (trust 0.9):
+
+1. **Slot induction from contradiction structure** — slots aren't
+   pre-defined; they emerge as positions where memories disagree.
+   Walk CONTRADICTS edges, extract `(frame, filler_pair)`, cluster
+   frames, induce comparison functions per cluster.
+2. **Semantic gravity per token** — tokens have evolving multi-
+   dimensional state (mass, charge, position vector, velocity).
+   Meaning is the *shape* of a token's gravity field, not its
+   position.
+3. **Gravity wells** — depressions in semantic space where many
+   other tokens get pulled in. Distinct from mass.
+4. **Contradictions clustering into meta-beliefs** — when
+   contradictions concentrate around a topic, the fact-of-
+   contradiction becomes a belief: "this is contested territory."
+5. **Self-constitution as trajectory** — substrate identity isn't
+   its current state, it's the gravity field's trajectory through
+   semantic space. *You're not who you remember; you're how your
+   meanings have moved.*
+
+These are the v0.11+ research direction. Each maps to a small
+experiment that uses substrate-resident state in ways no other
+mainstream pattern matcher can. The composable primitives in
+`aether/patterns.py` are the foundation layer; learned-pattern
+primitives mined from contradictions are the next layer up.
+
 ## Shipped (v0.10.1)
 
 ### `aether_path` was crashing in production -- the substrate caught it on first use

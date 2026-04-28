@@ -582,7 +582,18 @@ class StateStore:
             )
             mutex_hit = detect_mutex_conflict(other.text, text)
 
-            if not (slot_conflict or asymm_neg or policy or mutex_hit):
+            # v0.11: shape contradiction (typed-pattern conflicts).
+            # Catches Python 3.10 vs 3.8, 222 vs 99 tests, 2026-04-27 vs
+            # 2025-01-15 — quantitative/version/date conflicts the slot-
+            # extractor doesn't handle. Cold-mode safe (no embeddings).
+            from aether.patterns import shape as _shape_match
+            shape_result = _shape_match(other.text, text)
+            shape_hit = (
+                shape_result.score >= 1.0
+                and shape_result.evidence.get("conflicts")
+            )
+
+            if not (slot_conflict or asymm_neg or policy or mutex_hit or shape_hit):
                 # No contradiction. v0.9.1: if this candidate is similar
                 # enough, wire a RELATED_TO edge so aether_path has
                 # something to walk. Bidirectional because RELATED_TO is
@@ -644,6 +655,19 @@ class StateStore:
             if policy:
                 trace.append("policy_contradiction")
                 kind = "policy" if kind == "structural" else kind
+            if shape_hit:
+                # v0.11: typed-shape conflict (numeric/version/date).
+                # Closes v0.9.4 known_gap_quantitative cases.
+                conflict_summary = ", ".join(
+                    f"{c['shape']}:{c['a']}<>{c['b']}"
+                    for c in shape_result.evidence.get("conflicts", [])[:2]
+                )
+                trace.append(f"shape:{conflict_summary}")
+                if kind == "structural":
+                    kind = "quantitative"
+                # Shape conflict is decisive — bump tension score.
+                if not slot_conflict:
+                    disposition = Disposition.RESOLVABLE
 
             edge = ContradictionEdge(
                 disposition=disposition.value,
@@ -1030,6 +1054,16 @@ class StateStore:
             # Mutual-exclusion: "we use AWS" vs "we use GCP"
             mutex_hit = detect_mutex_conflict(hit["text"], text)
 
+            # v0.11: shape contradiction (typed-pattern conflict).
+            # Catches Python 3.10 vs 3.8 / dates / counts that the slot
+            # extractor can't compare. Cold-mode safe.
+            from aether.patterns import shape as _shape_match
+            _shape_grounding = _shape_match(hit["text"], text)
+            shape_hit = (
+                _shape_grounding.score >= 1.0
+                and _shape_grounding.evidence.get("conflicts")
+            )
+
             # v0.9.3 (Layer 2): methodological overclaim check. Independent
             # of slot-conflict detection. Fires when:
             #   1. The draft makes an inference (`so X`, `therefore Y`, etc.)
@@ -1060,7 +1094,7 @@ class StateStore:
                     ),
                     "tension_score": round(tr.tension_score, 3),
                 })
-            elif is_factual_contradict or is_policy_contradict or is_asymm_neg or mutex_hit:
+            elif is_factual_contradict or is_policy_contradict or is_asymm_neg or mutex_hit or shape_hit:
                 kind = "factual"
                 if is_asymm_neg and not is_factual_contradict:
                     kind = "negation_asymmetry"
@@ -1068,10 +1102,16 @@ class StateStore:
                     kind = "policy"
                 if mutex_hit and not is_factual_contradict:
                     kind = "mutex"
+                if shape_hit and not is_factual_contradict:
+                    kind = "quantitative"
                 entry = {
                     **hit,
                     "tension_score": round(
-                        max(tr.tension_score, 0.85 if mutex_hit else 0.0),
+                        max(
+                            tr.tension_score,
+                            0.85 if mutex_hit else 0.0,
+                            0.85 if shape_hit else 0.0,
+                        ),
                         3,
                     ),
                     "kind": kind,
@@ -1082,6 +1122,10 @@ class StateStore:
                         "value_a": mutex_hit.value_a,
                         "value_b": mutex_hit.value_b,
                     }
+                if shape_hit:
+                    entry["shape_conflicts"] = (
+                        _shape_grounding.evidence.get("conflicts", [])[:3]
+                    )
                 contradict.append(entry)
             elif tr.relationship in (
                 TensionRelationship.DUPLICATE,

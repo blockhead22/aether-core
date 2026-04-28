@@ -27,9 +27,9 @@
     }
   },
   {
-    "id": "known_gap_001_version_string",
-    "category": "known_gap_quantitative",
-    "description": "Version-number conflict (3.10 vs 3.8). StructuralTensionMeter is designed for categorical slot conflicts; quantitative/version-string conflicts where the surrounding text overlaps heavily are not detected. Tracked as a known limitation; future work can close the gap.",
+    "id": "quantitative_001_version_string",
+    "category": "factual_contradiction",
+    "description": "Version-number conflict (3.10 vs 3.8). v0.11: shape primitive in aether/patterns.py recognizes typed values and runs comparators. Closes the v0.9.4 known_gap_quantitative_001 case.",
     "substrate": [
       {"text": "This project requires Python 3.10 or higher.", "trust": 0.9, "source": "user"}
     ],
@@ -40,9 +40,9 @@
     }
   },
   {
-    "id": "known_gap_002_test_count",
-    "category": "known_gap_quantitative",
-    "description": "Numeric quantity conflict (222 vs 99). Not caught by slot-based detection.",
+    "id": "quantitative_002_test_count",
+    "category": "factual_contradiction",
+    "description": "Numeric quantity conflict (222 vs 99). v0.11: integer shape comparator catches it.",
     "substrate": [
       {"text": "The aether-core test suite has 222 tests.", "trust": 0.9, "source": "user"}
     ],
@@ -52,9 +52,9 @@
     }
   },
   {
-    "id": "known_gap_003_date",
-    "category": "known_gap_quantitative",
-    "description": "Date conflict (2026-04-27 vs 2025-01-15). Same root cause: dates aren't extracted as slot values.",
+    "id": "quantitative_003_date",
+    "category": "factual_contradiction",
+    "description": "Date conflict (2026-04-27 vs 2025-01-15). v0.11: ISO-date shape comparator catches it.",
     "substrate": [
       {"text": "aether-core v0.9.0 was released on 2026-04-27.", "trust": 0.95, "source": "user"}
     ],
