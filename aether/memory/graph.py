@@ -374,10 +374,15 @@ class MemoryGraph:
                 if HAS_NUMPY and isinstance(v, np.ndarray):
                     continue
                 clean_data[k] = v
+            # v0.10.1: put endpoints AFTER **clean_data so they always win.
+            # Edge metadata can legitimately contain a "source" or "target"
+            # key (e.g., backfill_edges metadata had `"source": "backfill"`),
+            # which would shadow the endpoint and corrupt the JSON. Endpoints
+            # last guarantees the round-trip preserves the actual node IDs.
             data["edges"].append({
+                **clean_data,
                 "source": source,
                 "target": target,
-                **clean_data,
             })
 
         # Save embeddings separately as .npy if numpy available
@@ -406,13 +411,23 @@ class MemoryGraph:
             return
 
         self.graph = nx.DiGraph()
+        valid_node_ids: set = set()
         for node in data.get("nodes", []):
             node_id = node.pop("id")
             self.graph.add_node(node_id, **node)
+            valid_node_ids.add(node_id)
 
         for edge in data.get("edges", []):
             source = edge.pop("source")
             target = edge.pop("target")
+            # v0.10.1: defense in depth. Pre-v0.10.1 substrates may have edges
+            # whose source/target was corrupted by metadata-shadowing
+            # (e.g. backfill_edges' `"source": "backfill"`). Skip any edge
+            # whose endpoints aren't real nodes — networkx would otherwise
+            # auto-create stub nodes with no required fields, and
+            # subsequent get_memory() calls crash.
+            if source not in valid_node_ids or target not in valid_node_ids:
+                continue
             self.graph.add_edge(source, target, **edge)
 
         # Load embeddings if available

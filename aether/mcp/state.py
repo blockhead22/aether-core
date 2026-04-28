@@ -819,7 +819,12 @@ class StateStore:
                 metadata = {
                     "similarity": float(round(sim, 4)),
                     "auto": True,
-                    "source": "backfill",
+                    # v0.10.1: was "source": "backfill" -- renamed to
+                    # avoid collision with the JSON edge schema's endpoint
+                    # key, which corrupted save/load round-trips and
+                    # produced stub "backfill" nodes that crashed
+                    # aether_path's graph walk.
+                    "origin": "backfill",
                     "mode": mode,
                 }
                 self.graph.add_edge(

@@ -2,6 +2,83 @@
 
 What is shipped today, what is coming next, and what is intentionally not in this repo.
 
+## Shipped (v0.10.1)
+
+### `aether_path` was crashing in production -- the substrate caught it on first use
+
+The first end-to-end test under v0.10.0 (substrate-assisted dev loop on
+v0.10.1 design work) called `aether_path` to preload context. The tool
+returned:
+
+```
+Error: MemoryNode.__init__() missing 3 required positional arguments:
+'memory_id', 'text', 'created_at'
+```
+
+Root cause: a save/load asymmetry in `aether/memory/graph.py`. In `save()`,
+edges were serialized as:
+
+```python
+data["edges"].append({
+    "source": source_id,    # endpoint, set first
+    "target": target_id,
+    **clean_data,           # <-- shadow-overrides "source" if metadata had it
+})
+```
+
+`backfill_edges` (v0.9.5) included `"source": "backfill"` in its auto-link
+metadata. The `**clean_data` spread overrode the endpoint `"source"` key.
+The JSON wrote `source="backfill"` instead of the real `memory_id`. On
+`load()`, networkx's `add_edge("backfill", target_id, ...)` auto-created a
+stub node with id `"backfill"` and no required fields. Subsequent
+`get_memory()` on that stub crashed with the AttributeError. The stub
+sat in production for ~12 hours; aether_path was effectively broken on
+any substrate that ran `backfill_edges` -- which is the documented
+recovery tool from v0.9.1.
+
+The unit tests didn't catch it because every persistence test used the
+public API to build edges and never round-tripped metadata containing
+keys that shadow the JSON edge schema.
+
+Fix (three-part defense):
+
+1. **`save()` puts endpoints AFTER `**clean_data`** so endpoints always win
+   (the colliding metadata field is silently dropped on save -- documented
+   contract).
+2. **`load()` skips edges with unknown endpoints** -- defense in depth for
+   any pre-v0.10.1 substrates loaded by v0.10.1+ runtimes; prevents stub
+   nodes from forming.
+3. **`backfill_edges` renames metadata key `source` -> `origin`** to avoid
+   the collision entirely going forward.
+
+Production substrate at `~/.aether/mcp_state.json` was repaired in
+parallel: backed up to `mcp_state.broken_pre_v0101_<ts>.json`, then
+the orphan `"backfill"` stub node and the two corrupt edges referencing
+it were removed (27 -> 26 nodes, 6 -> 4 edges).
+
+**Tests: 268 pass (was 260). 8 new tests in
+`tests/test_v101_save_load_metadata_collision.py`** covering: edge
+metadata key collision (source/target), absence of stub nodes after
+round-trip, `get_memory` working on every node, `load()` defense in
+depth on corrupted substrates, and `backfill_edges` using the renamed
+`origin` key.
+
+### Meta-finding: the substrate-assisted dev loop demonstrated itself
+
+This bug was caught by the substrate, not by tests. Specifically: the
+fresh-session agent investigating the v0.10.1 design called `aether_path`
+to preload context, the tool crashed, the agent flagged it correctly,
+fell back to source-of-truth grep, and the diagnosis surfaced before any
+code change. The "query the source of truth, don't infer" rule from
+session 1's feedback file propagated across five+ session restarts and
+caught a production bug in the marquee tool. This is the validation
+chapter's strongest data point yet -- the loop catches what synthetic
+tests miss, and the engineering response to its findings produces real
+patches with regression discipline.
+
+Deferred to v0.10.2: the auto-link substring formula divergence
+(v0.9.6 carry-over). Separable concern, cleaner commit narrative.
+
 ## Shipped (v0.10.0)
 
 ### Action receipts — the audit half of the governance loop
