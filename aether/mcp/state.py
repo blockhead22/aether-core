@@ -478,11 +478,30 @@ class StateStore:
 
         Returns a dict with `memory_id`, `extracted_slots`, and a
         `tension_findings` list describing CONTRADICTS edges added.
+
+        v0.12: when `slots` is None, automatically run extract_fact_slots
+        on the text to populate slot tags. Without this, memories written
+        through normal channels (no explicit `slots=` parameter) carry no
+        slot tags and the slot-equality detector has nothing to compare.
+        Production substrate organically discovered 7 user-facing slots
+        through this path; OSS now mirrors that.
         """
         memory_id = f"m{int(time.time() * 1000)}_{next(self._id_counter)}"
         tags: list[str] = [f"source:{source}"]
-        if slots:
-            tags.extend(f"slot:{k}={v}" for k, v in slots.items())
+
+        # v0.12: auto-extract slots from text when none provided
+        auto_extracted: Dict[str, str] = {}
+        if slots is None:
+            try:
+                from aether.memory import extract_fact_slots
+                facts = extract_fact_slots(text)
+                auto_extracted = {k: v.normalized for k, v in facts.items()}
+            except Exception:
+                pass
+
+        effective_slots = slots if slots is not None else auto_extracted
+        if effective_slots:
+            tags.extend(f"slot:{k}={v}" for k, v in effective_slots.items())
 
         embedding = self._encode(text) if self._encoder else None
 
@@ -498,14 +517,16 @@ class StateStore:
 
         findings: List[Dict[str, Any]] = []
         if detect_contradictions:
-            findings = self._detect_and_record_tensions(memory_id, text, trust, source)
+            findings = self._detect_and_record_tensions(
+                memory_id, text, trust, source, tags=tags,
+            )
 
         self.save()
         return {
             "memory_id": memory_id,
             "trust": trust,
             "source": source,
-            "extracted_slots": slots or {},
+            "extracted_slots": effective_slots,
             "tension_findings": findings,
         }
 
@@ -515,10 +536,28 @@ class StateStore:
         text: str,
         trust: float,
         source: str,
+        tags: Optional[List[str]] = None,
     ) -> List[Dict[str, Any]]:
-        """Run tension meter against top-K most similar existing memories."""
+        """Run tension meter against top-K most similar existing memories.
+
+        v0.12: `tags` is the new memory's tag list (including any
+        slot:KEY=VALUE entries from slot extraction). Used by
+        slot-equality contradiction detection.
+        """
         new_emb = self.graph.get_embedding(memory_id)
         candidates: List[Tuple[float, MemoryNode]] = []
+
+        # v0.12: extract slot keys from the new memory's tags so we can
+        # pre-screen for slot-shared candidates regardless of textual
+        # similarity. Production data has cases like "remember my name
+        # is Nick" vs "your name is Aether" — only ~0.14 Jaccard, below
+        # the 0.2 gate, but the slot:user.name key matches and the
+        # values disagree. Without this pre-screen the slot-equality
+        # detector never sees the pair.
+        new_slot_keys: set[str] = set()
+        for t in (tags or []):
+            if t.startswith("slot:") and "=" in t[len("slot:"):]:
+                new_slot_keys.add(t[len("slot:"):].split("=", 1)[0])
 
         for other in self.graph.all_memories():
             if other.memory_id == memory_id:
@@ -536,9 +575,40 @@ class StateStore:
         candidates.sort(key=lambda x: x[0], reverse=True)
         top = candidates[:TENSION_TOP_K]
 
+        # v0.12: augment top-K with any candidates that share a slot key
+        # with the new memory but didn't make the textual top-K. Bounded
+        # so we never blow past 2x TENSION_TOP_K total candidates.
+        if new_slot_keys:
+            seen = {o.memory_id for _, o in top}
+            slot_extras: List[Tuple[float, MemoryNode]] = []
+            for sim, other in candidates:
+                if other.memory_id in seen:
+                    continue
+                other_slot_keys = set()
+                for t in (other.tags or []):
+                    if t.startswith("slot:") and "=" in t[len("slot:"):]:
+                        other_slot_keys.add(t[len("slot:"):].split("=", 1)[0])
+                if new_slot_keys & other_slot_keys:
+                    slot_extras.append((sim, other))
+                    seen.add(other.memory_id)
+                    if len(slot_extras) >= TENSION_TOP_K:
+                        break
+            top = list(top) + slot_extras
+
         findings: List[Dict[str, Any]] = []
         for sim, other in top:
-            if sim < 0.2:  # Don't bother — clearly unrelated
+            # v0.12: if the candidate shares a slot key with the new
+            # memory, skip the sim gate — slot-equality is a categorical
+            # signal independent of textual similarity.
+            shares_slot = False
+            if new_slot_keys:
+                for t in (other.tags or []):
+                    if (t.startswith("slot:")
+                            and "=" in t[len("slot:"):]
+                            and t[len("slot:"):].split("=", 1)[0] in new_slot_keys):
+                        shares_slot = True
+                        break
+            if sim < 0.2 and not shares_slot:  # Don't bother — clearly unrelated
                 continue
             try:
                 result = self.meter.measure(
@@ -583,17 +653,32 @@ class StateStore:
             mutex_hit = detect_mutex_conflict(other.text, text)
 
             # v0.11: shape contradiction (typed-pattern conflicts).
-            # Catches Python 3.10 vs 3.8, 222 vs 99 tests, 2026-04-27 vs
-            # 2025-01-15 — quantitative/version/date conflicts the slot-
-            # extractor doesn't handle. Cold-mode safe (no embeddings).
+            # v0.12: shape now uses local-context gating to suppress
+            # false positives on co-topical memories with unrelated
+            # numerics.
             from aether.patterns import shape as _shape_match
+            from aether.patterns import slot_equality as _slot_equality_match
             shape_result = _shape_match(other.text, text)
             shape_hit = (
                 shape_result.score >= 1.0
                 and shape_result.evidence.get("conflicts")
             )
 
-            if not (slot_conflict or asymm_neg or policy or mutex_hit or shape_hit):
+            # v0.12: slot-equality contradiction. Closes Lab A v2 finding —
+            # production has 42 real categorical contradictions on slots
+            # (user.name, user.favorite_color, user.location, etc.) that
+            # the previous detection layer was 0/42 on.
+            slot_eq_result = _slot_equality_match(
+                other.tags or [],
+                tags or [],
+            )
+            slot_eq_hit = (
+                slot_eq_result.score >= 1.0
+                and slot_eq_result.evidence.get("conflicts")
+            )
+
+            if not (slot_conflict or asymm_neg or policy or mutex_hit
+                    or shape_hit or slot_eq_hit):
                 # No contradiction. v0.9.1: if this candidate is similar
                 # enough, wire a RELATED_TO edge so aether_path has
                 # something to walk. Bidirectional because RELATED_TO is
@@ -668,12 +753,28 @@ class StateStore:
                 # Shape conflict is decisive — bump tension score.
                 if not slot_conflict:
                     disposition = Disposition.RESOLVABLE
+            if slot_eq_hit:
+                # v0.12: slot-equality conflict. Categorical conflict on
+                # a known slot (e.g. user.name=Nick vs user.name=Aether).
+                slot_summary = ", ".join(
+                    f"{c['slot']}:{c['a']}<>{c['b']}"
+                    for c in slot_eq_result.evidence.get("conflicts", [])[:2]
+                )
+                trace.append(f"slot_value_conflict:{slot_summary}")
+                if kind == "structural":
+                    kind = "slot_value_conflict"
+                if not slot_conflict and not shape_hit:
+                    disposition = Disposition.RESOLVABLE
 
+            # v0.12: slot-equality contributes 0.9 to nli_score (categorical
+            # conflict on a known slot is high-confidence — exactly the
+            # 0.9 weight Lab A v2 recommended for the new detector).
             edge = ContradictionEdge(
                 disposition=disposition.value,
                 nli_score=max(
                     result.tension_score,
                     0.85 if mutex_hit else 0.0,
+                    0.9 if slot_eq_hit else 0.0,
                 ),
                 overlap_integral=result.supporting_signals.get(
                     "embedding_similarity", sim
@@ -691,7 +792,11 @@ class StateStore:
                 "relationship": result.relationship.value,
                 "disposition": disposition.value,
                 "tension_score": round(
-                    max(result.tension_score, 0.85 if mutex_hit else 0.0),
+                    max(
+                        result.tension_score,
+                        0.85 if mutex_hit else 0.0,
+                        0.9 if slot_eq_hit else 0.0,
+                    ),
                     3,
                 ),
                 "recommended_action": result.action.value,
@@ -934,6 +1039,9 @@ class StateStore:
                     "substring_score": round(substring_score, 3),
                     "belnap_state": belnap,
                     "warnings": warnings,
+                    # v0.12: include tags so downstream slot-equality
+                    # detection works on the read path
+                    "tags": list(node.tags or []),
                 },
             ))
 
@@ -1054,14 +1162,30 @@ class StateStore:
             # Mutual-exclusion: "we use AWS" vs "we use GCP"
             mutex_hit = detect_mutex_conflict(hit["text"], text)
 
-            # v0.11: shape contradiction (typed-pattern conflict).
-            # Catches Python 3.10 vs 3.8 / dates / counts that the slot
-            # extractor can't compare. Cold-mode safe.
+            # v0.11/v0.12: shape contradiction with local-context gate.
             from aether.patterns import shape as _shape_match
+            from aether.patterns import slot_equality as _slot_equality_match
             _shape_grounding = _shape_match(hit["text"], text)
             shape_hit = (
                 _shape_grounding.score >= 1.0
                 and _shape_grounding.evidence.get("conflicts")
+            )
+
+            # v0.12: slot-equality conflict on the read side. The draft
+            # text gets slot-extracted on the fly; if any extracted slot
+            # disagrees with the candidate memory's slot tags, that's a
+            # categorical contradiction the user should see.
+            from aether.memory import extract_fact_slots
+            _draft_slots = extract_fact_slots(text)
+            _draft_tags = [
+                f"slot:{k}={v.normalized}" for k, v in _draft_slots.items()
+            ]
+            _slot_eq_grounding = _slot_equality_match(
+                hit.get("tags") or [], _draft_tags,
+            )
+            slot_eq_hit = (
+                _slot_eq_grounding.score >= 1.0
+                and _slot_eq_grounding.evidence.get("conflicts")
             )
 
             # v0.9.3 (Layer 2): methodological overclaim check. Independent
@@ -1094,7 +1218,7 @@ class StateStore:
                     ),
                     "tension_score": round(tr.tension_score, 3),
                 })
-            elif is_factual_contradict or is_policy_contradict or is_asymm_neg or mutex_hit or shape_hit:
+            elif is_factual_contradict or is_policy_contradict or is_asymm_neg or mutex_hit or shape_hit or slot_eq_hit:
                 kind = "factual"
                 if is_asymm_neg and not is_factual_contradict:
                     kind = "negation_asymmetry"
@@ -1104,6 +1228,8 @@ class StateStore:
                     kind = "mutex"
                 if shape_hit and not is_factual_contradict:
                     kind = "quantitative"
+                if slot_eq_hit and not is_factual_contradict:
+                    kind = "slot_value_conflict"
                 entry = {
                     **hit,
                     "tension_score": round(
@@ -1111,6 +1237,7 @@ class StateStore:
                             tr.tension_score,
                             0.85 if mutex_hit else 0.0,
                             0.85 if shape_hit else 0.0,
+                            0.9 if slot_eq_hit else 0.0,
                         ),
                         3,
                     ),
@@ -1122,6 +1249,10 @@ class StateStore:
                         "value_a": mutex_hit.value_a,
                         "value_b": mutex_hit.value_b,
                     }
+                if slot_eq_hit:
+                    entry["slot_conflicts"] = (
+                        _slot_eq_grounding.evidence.get("conflicts", [])[:3]
+                    )
                 if shape_hit:
                     entry["shape_conflicts"] = (
                         _shape_grounding.evidence.get("conflicts", [])[:3]

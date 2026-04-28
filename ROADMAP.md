@@ -2,6 +2,102 @@
 
 What is shipped today, what is coming next, and what is intentionally not in this repo.
 
+## Shipped (v0.12.0)
+
+### Slot-equality detector + shape local-context gate
+
+Two parallel fixes that came directly out of Lab A v2's production-substrate
+audit (`bench/lab_a_v2_production_substrate_findings.md`). The audit walked
+324 facts and 94 supersessions in the production CRT substrate and found
+that **v0.11's detection layer caught 0 of 42 real categorical
+contradictions** on slots like `user.name`, `user.favorite_color`,
+`user.location`. Production had been doing the contradiction work manually
+via supersession because the detection layer was blind to slot-equality
+conflicts.
+
+#### Fix A — slot-equality detector
+
+New primitive in `aether/patterns.py`:
+
+```python
+slot_equality(tags_a, tags_b) -> MatchResult
+```
+
+The simplest possible contradiction class: two memories tag the same
+`slot:KEY=VALUE` with different categorical values. Score 1.0 on
+disagreement, 0.5 on agreement, 0.0 on no shared slots. Cold-mode safe,
+case-insensitive, whitespace-stripped equality. The slot taxonomy is
+**substrate-resident** — every new slot the extractor recognizes becomes
+a contradiction-detection point automatically (no hardcoded registry).
+
+Wired into both contradiction paths:
+
+- `_detect_and_record_tensions` (write): runs as a 6th independent signal
+  alongside slot_conflict, asymm_neg, policy, mutex, shape. Fires with
+  `kind="slot_value_conflict"` and `nli_score=0.9` (high confidence —
+  categorical conflict on a known slot is decisive).
+- `compute_grounding` (read): extracts slots from draft text on the fly
+  via `extract_fact_slots`, compares against candidate memory tags.
+
+**Slot-keyed candidate pre-screen**: production texts often have low
+textual overlap (e.g. "remember my name is Nick" vs "your name is Aether"
+~ 0.14 Jaccard, below the 0.2 candidate gate). v0.12 augments the top-K
+candidate set with any memory sharing a slot key with the new memory, and
+bypasses the sim gate for slot-shared candidates. Without this the
+detector never sees the pair.
+
+#### Fix B — shape primitive local-context gate
+
+The substrate-assisted dev loop caught a real v0.11 production bug. When
+the v0.12 design first went up for sanction, the call REJECTED — and the
+reason wasn't a process failure, it was a true positive: the action text
+mentioned "v0.12" and a Lab A v2 memory mentioned "v0.11", so v0.11's
+shape primitive registered them as a version conflict. Same shape,
+unrelated topics, false positive.
+
+Fix: shape conflicts now require the **immediate surrounding tokens** to
+overlap before treating differing typed values as contradicting:
+
+- `LOCAL_CONTEXT_TOKENS = 3` — 3 tokens before and after the typed value
+- `LOCAL_CONTEXT_MIN_OVERLAP = 0.30` — Jaccard threshold
+
+"Python 3.10 or higher" vs "Python 3.8" share `python` in local context →
+real conflict, fires at score 1.0. "ship v0.12 today" vs "v0.11 was last
+week" don't share local context around the version → suppressed. Rejected
+conflicts are still visible in `evidence["suppressed"]` for debugging.
+
+#### Auto slot extraction in add_memory
+
+When `slots=None` (the default), `add_memory` now runs `extract_fact_slots`
+on the text and tags the memory with whatever the extractor recognizes
+(`employer`, `location`, etc.). Without this, memories written through
+normal channels carry no slot tags and the detector has nothing to compare.
+
+#### Bench impact
+
+| Mode | v0.11.0 | v0.12.0 |
+|---|---|---|
+| Warm | 29/29 blocker pass (100%) | **29/29 blocker pass (100%)** |
+| Cold | 19/29 (65.5%) | **21/29 (72.4%)** |
+
+No warm regressions. Cold gained +2 categories. The Lab A v2 production
+case (Nick→Aether, blue→orange, etc.) is now caught — verified by the
+6 write-path slot-equality tests.
+
+**323 tests pass** (was 300). 23 new in
+`tests/test_v120_slot_equality_and_local_context.py` covering the
+primitive in isolation, write-path integration across the textual-
+similarity gradient, read-path integration via compute_grounding, the
+sanction-self-reject regression, and the both-fixes-compose case.
+
+#### Meta-finding
+
+The substrate caught its own bug. v0.11.0 shipped with a shape false
+positive that nobody saw. The substrate-assisted dev loop surfaced it
+the first time the new detection touched a real audit memory — the
+sanction REJECT verdict WAS the bug report. v0.12 closes both the gap
+the audit found AND the bug the audit triggered.
+
 ## Shipped (v0.11.0)
 
 ### Composable pattern primitives + the quantitative known-gap closes
