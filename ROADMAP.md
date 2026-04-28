@@ -2,6 +2,59 @@
 
 What is shipped today, what is coming next, and what is intentionally not in this repo.
 
+## Shipped (v0.9.2)
+
+### Governance tier no longer wedges on cold encoder
+
+The first end-to-end substrate-assisted dev test (2026-04-28) found that
+`aether_sanction` hung >10s on cold start and got killed twice. Diagnosis:
+the call path is `aether_sanction → govern_response → template_detector
+.detect("rm test_image.jpg") → regex finds no hedges → falls into
+_scan_hedges_by_embedding → _get_embedder()`. That last call did a
+*synchronous* `from sentence_transformers import SentenceTransformer` +
+`SentenceTransformer(...)` instantiation — the same wedge v0.8.x fixed
+for `aether_search`, hidden inside the governance layer with its own
+private embedder. Two more identical patterns in `speech_leak_detector`
+and `continuity_auditor`. None integrated with the StateStore's
+`_LazyEncoder` warmup machinery.
+
+Fix:
+
+1. **Extract `LazyEncoder` to `aether/_lazy_encoder.py`** as a shared,
+   process-wide non-blocking encoder. Cache (`_MODEL_CACHE`) means
+   multiple `LazyEncoder` instances for the same model share one
+   underlying load. Model name normalization (`all-MiniLM-L6-v2` ↔
+   `sentence-transformers/all-MiniLM-L6-v2`) keeps the cache key
+   consistent across modules.
+
+2. **Each governance immune agent** (`TemplateDetector`,
+   `SpeechLeakDetector`, `ContinuityAuditor`) now uses the shared
+   `LazyEncoder`. First access kicks off background warmup; until warm,
+   `_get_*()` returns `None` instead of blocking. Each callsite handles
+   `None` gracefully:
+   - `TemplateDetector._scan_hedges_by_embedding` returns `[]` (regex
+     pass remains authoritative).
+   - `TemplateDetector._compute_variance` returns `0.0`.
+   - `SpeechLeakDetector.detect` returns a conservative fallback verdict
+     — `BLOCK` for high-trust writes, `DOWNGRADE` for low-trust — with
+     reason "encoder still warming up; cannot verify grounding."
+   - `ContinuityAuditor.check` returns `PASS` (no continuity check
+     possible without embeddings).
+
+3. **Critical regression test** (`test_sanction_on_hedge_free_imperative_returns_under_5s`):
+   the exact input that wedged in production now returns within 5s on
+   cold encoder. Plus 7 unit tests covering each module's non-blocking
+   contract and shared-cache behavior.
+
+197 tests pass (was 189). 8 new tests in `test_v092_governance_nonblocking.py`.
+
+### Deferred to v0.9.3
+
+Tool-level timeout wrapper as defense-in-depth. The internal blocking is
+gone, so this is insurance for future tools rather than a needed fix.
+Implementation requires careful Python threading work (you can't kill
+threads cleanly; signal-based timeouts don't work on Windows).
+
 ## Shipped (v0.9.1)
 
 ### aether_path was a no-op on substrates built through MCP — now fixed

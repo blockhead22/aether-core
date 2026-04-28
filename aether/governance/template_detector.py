@@ -124,6 +124,7 @@ class TemplateDetector:
         variance_high: float = VARIANCE_HIGH,
         hedge_threshold: int = 1,
         embedding_model: str = "all-MiniLM-L6-v2",
+        lazy_encoder=None,
     ):
         """
         Args:
@@ -134,12 +135,18 @@ class TemplateDetector:
             hedge_threshold: Minimum number of hedge patterns to trigger
                              template detection.
             embedding_model: Sentence-transformer model name for embeddings.
+            lazy_encoder:    Optional shared LazyEncoder (from
+                             aether._lazy_encoder). When the GovernanceLayer
+                             constructs immune agents, it passes one shared
+                             encoder so the model loads once per process
+                             instead of once per agent. When None, a private
+                             LazyEncoder is constructed and warmed up.
         """
         self.variance_low = variance_low
         self.variance_high = variance_high
         self.hedge_threshold = hedge_threshold
         self._embedding_model_name = embedding_model
-        self._embedder = None  # lazy-loaded
+        self._lazy_encoder = lazy_encoder  # may be None — set up lazily
 
     # ------------------------------------------------------------------
     # Public API
@@ -203,11 +210,17 @@ class TemplateDetector:
         Pre-computes a centroid from canonical hedge templates.
         If the input text's embedding is close to the centroid,
         it's likely hedging even if it doesn't match any regex.
+
+        Falls back to no-op when the encoder isn't loaded yet (e.g. cold
+        start, [ml] extra missing). Regex-pass results remain authoritative.
         """
         try:
             embedder = self._get_embedder()
         except (ImportError, Exception):
             return []  # graceful degradation without embeddings
+        if embedder is None:
+            # v0.9.2: encoder warming or unavailable — fall back to regex only.
+            return []
 
         # Canonical hedge exemplars — covers the semantic space
         if not hasattr(self, '_hedge_centroid'):
@@ -264,8 +277,13 @@ class TemplateDetector:
 
         Returns a float in [0, 2] where 0 = identical, higher = more diverse.
         Typical range for LLM repeated responses: 0.01 - 0.40.
+
+        v0.9.2: returns 0.0 (no variance signal) when encoder isn't loaded;
+        callers should treat that as "no signal" rather than "low variance."
         """
         embedder = self._get_embedder()
+        if embedder is None:
+            return 0.0  # encoder not warm — no embedding-based variance signal
         embeddings = embedder.encode(responses, convert_to_numpy=True)
 
         # Normalize
@@ -403,11 +421,20 @@ class TemplateDetector:
             )
 
     def _get_embedder(self):
-        """Lazy-load sentence-transformers model."""
-        if self._embedder is None:
-            from sentence_transformers import SentenceTransformer
-            self._embedder = SentenceTransformer(self._embedding_model_name)
-        return self._embedder
+        """Return the embedding model if loaded, None otherwise.
+
+        v0.9.2: never blocks. Previously this synchronously imported
+        sentence-transformers and built a SentenceTransformer instance
+        on first call — which could hang aether_sanction for 30s-2min on
+        a cold Windows cache. Now we use a shared non-blocking
+        LazyEncoder; first call kicks off background warmup; until warm,
+        callers get None and must fall back to regex-only paths.
+        """
+        if self._lazy_encoder is None:
+            from aether._lazy_encoder import LazyEncoder
+            self._lazy_encoder = LazyEncoder(self._embedding_model_name)
+            self._lazy_encoder.start_warmup()
+        return self._lazy_encoder.model  # SentenceTransformer or None
 
 
 # ======================================================================

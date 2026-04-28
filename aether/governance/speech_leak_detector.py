@@ -113,6 +113,7 @@ class SpeechLeakDetector:
         grounding_threshold: float = GROUNDING_THRESHOLD,
         partial_threshold: float = PARTIAL_THRESHOLD,
         verified_sources: Optional[set] = None,
+        lazy_encoder=None,
     ):
         """
         Args:
@@ -143,26 +144,36 @@ class SpeechLeakDetector:
 
         if embedding_fn is not None:
             self._encode = embedding_fn
+            self._lazy_encoder = None
         else:
-            self._encoder = None  # lazy-load
+            self._lazy_encoder = lazy_encoder  # may be None — set up lazily
 
     def _get_encoder(self):
-        """Lazy-load an embedding engine. Tries sentence-transformers, falls back to error."""
-        if self._encoder is None:
-            try:
-                from sentence_transformers import SentenceTransformer
-                self._encoder = SentenceTransformer("all-MiniLM-L6-v2")
-            except ImportError:
-                raise ImportError(
-                    "SpeechLeakDetector requires an embedding function. "
-                    "Either pass embedding_fn= to the constructor, or "
-                    "install sentence-transformers: pip install sentence-transformers"
-                )
-        return self._encoder
+        """Return the embedder if loaded, None otherwise.
 
-    def _encode(self, text: str) -> np.ndarray:
-        """Default encode using project embeddings."""
-        return self._get_encoder().encode(text)
+        v0.9.2: never blocks. Previously synchronously imported
+        sentence-transformers and instantiated a SentenceTransformer on
+        first call, which could hang governance tools for 30s-2min on a
+        cold cache. Now uses a shared non-blocking LazyEncoder; first
+        call kicks off background warmup; until warm, callers get None
+        and skip the embedding-based check.
+        """
+        if self._lazy_encoder is None:
+            from aether._lazy_encoder import LazyEncoder
+            self._lazy_encoder = LazyEncoder()
+            self._lazy_encoder.start_warmup()
+        return self._lazy_encoder.model  # SentenceTransformer or None
+
+    def _encode(self, text: str):
+        """Default encode using the shared LazyEncoder.
+
+        Returns a numpy vector when the encoder is loaded, None when it's
+        still warming up. Callers must handle None — never block.
+        """
+        encoder = self._get_encoder()
+        if encoder is None:
+            return None
+        return encoder.encode(text)
 
     # -------------------------------------------------------------------
     # Core detection
@@ -230,6 +241,29 @@ class SpeechLeakDetector:
         # Encode candidate
         candidate_emb = self._encode(candidate_text)
 
+        # v0.9.2: encoder may be warming up (first call after process start).
+        # Fall back to a conservative no-grounding-verified verdict instead
+        # of crashing on np.dot(None, ...). High-trust writes block
+        # (same as the no-memories case); low-trust writes downgrade.
+        if candidate_emb is None:
+            if proposed_trust > 0.5:
+                return Verdict(
+                    action=VerdictType.BLOCK,
+                    original_trust=proposed_trust,
+                    final_trust=0.0,
+                    reason="Encoder still warming up; cannot verify grounding. "
+                           f"High-trust claim ({proposed_trust:.2f}) blocked "
+                           "as a conservative fallback. Retry once embeddings "
+                           "are loaded.",
+                )
+            return Verdict(
+                action=VerdictType.DOWNGRADE,
+                original_trust=proposed_trust,
+                final_trust=0.0,
+                reason="Encoder still warming up; cannot verify grounding. "
+                       "Trust zeroed; tagged as ungrounded pending warmup.",
+            )
+
         # Find best grounding match among non-generated memories
         best_sim = 0.0
         best_record: Optional[MemoryRecord] = None
@@ -244,6 +278,10 @@ class SpeechLeakDetector:
                 mem_emb = mem.embedding
             else:
                 mem_emb = self._encode(mem.text)
+                if mem_emb is None:
+                    # Encoder went unavailable mid-loop (extremely unlikely);
+                    # skip this memory rather than crash.
+                    continue
 
             sim = float(np.dot(candidate_emb, mem_emb))
             if sim > best_sim:

@@ -145,21 +145,26 @@ class ContinuityAuditor:
     def _get_connection(self) -> sqlite3.Connection:
         return sqlite3.connect(self.db_path)
 
-    def _encode(self, text: str) -> np.ndarray:
-        """Encode text to embedding vector. Uses injected fn or falls back to sentence-transformers."""
+    def _encode(self, text: str):
+        """Encode text to embedding vector. Uses injected fn or shared LazyEncoder.
+
+        v0.9.2: never blocks. Returns None when the encoder is still
+        warming up. Callers must handle None — never block waiting.
+        """
         if self._encode_fn is not None:
             return self._encode_fn(text)
+        if not hasattr(self, '_lazy_encoder') or self._lazy_encoder is None:
+            from aether._lazy_encoder import LazyEncoder
+            self._lazy_encoder = LazyEncoder()
+            self._lazy_encoder.start_warmup()
+        if not self._lazy_encoder.is_loaded:
+            return None
         try:
-            from sentence_transformers import SentenceTransformer
-            if not hasattr(self, '_model'):
-                self._model = SentenceTransformer("all-MiniLM-L6-v2")
-            return np.array(self._model.encode(text), dtype=np.float32)
-        except ImportError:
-            raise ImportError(
-                "ContinuityAuditor requires an embedding function. "
-                "Either pass encode_fn= to the constructor, or "
-                "install sentence-transformers: pip install sentence-transformers"
-            )
+            vec = self._lazy_encoder.model.encode(text)
+            return np.array(vec, dtype=np.float32)
+        except Exception as e:
+            log.warning("ContinuityAuditor: embedding failed: %s", e)
+            return None
 
     # -------------------------------------------------------------------
     # Core check
@@ -182,6 +187,12 @@ class ContinuityAuditor:
                 query_emb = self._encode(audit.query)
             except Exception as e:
                 log.warning("ContinuityAuditor: embedding failed: %s", e)
+                return ContinuityVerdict(
+                    has_prior=False, prior_count=0, max_similarity=0.0,
+                    action=ContinuityAction.PASS,
+                )
+            # v0.9.2: encoder warming up — pass through without continuity check.
+            if query_emb is None:
                 return ContinuityVerdict(
                     has_prior=False, prior_count=0, max_similarity=0.0,
                     action=ContinuityAction.PASS,
