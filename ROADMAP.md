@@ -2,6 +2,84 @@
 
 What is shipped today, what is coming next, and what is intentionally not in this repo.
 
+## Shipped (v0.9.5)
+
+### Governance works in cold-encoder mode (the v0.9.4 production miss)
+
+The first end-to-end re-run of the calibration rubric (2026-04-28
+late-night) confirmed v0.9.2 (no-hang) but flagged that v0.9.3
+(methodological detection) and v0.9.1 (auto-link RELATED_TO) BOTH
+failed in production despite passing 100% in the v0.9.4 bench.
+
+Root cause: `aether/contradiction/tension.py:_encode` handled
+`self._encoder is None` (no encoder injected) but NOT the case where
+the encoder is present but its `encode()` method returns `None`
+(LazyEncoder's contract when not yet warm). When that happened,
+`_compute_similarity` did `vector.size` on `None` →
+`AttributeError` → the `try/except: continue` in BOTH
+`compute_grounding` and `_detect_and_record_tensions` swallowed the
+raise and silently skipped the entire loop body, including the
+methodological-overclaim check (v0.9.3), the auto-link RELATED_TO
+logic (v0.9.1), the contradiction-on-write logic (v0.5+), and even
+mutex contradiction routing.
+
+The bench passed in v0.9.4 because every test fixture forces
+synchronous `s._encoder._load()` before running. Same meta-pattern
+as v0.9.0: synthetic tests bypassed the production code path.
+
+Fixes:
+
+1. **`tension.py:_encode` now handles `None` returns from a non-blocking
+   encoder.** Five-line patch: convert `None` to `np.array([])` so
+   downstream size checks work without raising.
+
+2. **Adaptive `AUTO_LINK_THRESHOLD`.** The original 0.7 was tuned for
+   embedding cosine; Jaccard rarely hits 0.7 even on clearly-related
+   text. v0.9.5 introduces `AUTO_LINK_THRESHOLD_SUBSTRING` (default
+   0.4) used when the encoder is cold, picked via
+   `self._encoder.is_loaded` rather than the unreliable
+   `embedding_similarity is not None` check (the meter sets
+   `embedding_similarity: 0.0` even cold). Both `_detect_and_record_tensions`
+   and `backfill_edges` use the adaptive threshold.
+
+3. **Adaptive `GROUNDING_MIN_SCORE`.** The 0.15 floor was tuned for
+   embedding combined-score; substring scores are typically lower.
+   v0.9.5 introduces `GROUNDING_MIN_SCORE_SUBSTRING` (0.10) used in
+   cold mode so clearly-related memories at substring score 0.10-0.15
+   still surface for the methodological check.
+
+4. **Bench runs in cold mode too.** New `--cold-encoder` flag on
+   `run_fidelity_bench` swaps in a never-warmed `LazyEncoder`. New
+   pytest class `TestFidelityCalibrationColdMode` enforces the cold-mode
+   baseline as part of the regular suite. Future regressions in cold-
+   mode behavior will fail CI.
+
+**Cold-mode baseline numbers** established by this release:
+
+| Category | Warm | Cold |
+|---|---|---|
+| mutex_contradiction | 100% | 100% |
+| methodological_overclaim | 100% | 80% (4/5) |
+| false_positive_guard | 100% | 100% |
+| no_issue_unrelated | 100% | 100% |
+| factual_contradiction | 100% | 0% — needs slot extraction (embedding-gated) |
+| policy_violation | 100% | 0% — `embedding_similarity >= 0.45` gate |
+| negation_asymmetry | 100% | 0% — same gate |
+| no_issue_grounded | 100% | 25% — DUPLICATE/REFINEMENT classification needs embeddings |
+
+Some cold-mode gaps are inherent (slot extraction without embedding
+fallback can't classify paraphrases as DUPLICATE). Some are fixable
+in future work (lower the policy / negation embedding-similarity
+gate, add a Jaccard-based pathway). The bench tracks both modes so
+future improvements show up as numbers.
+
+Tests: 238 pass (was 227). 8 new tests in
+`tests/test_v095_cold_encoder_path.py` directly exercising the
+production cold-start code path. 3 new bench assertions in
+`tests/test_v094_fidelity_calibration.py::TestFidelityCalibrationColdMode`.
+
+This closes the v0.9.4 production miss the agent's re-run found.
+
 ## Shipped (v0.9.4)
 
 ### Fidelity calibration bench — measurable governance quality

@@ -178,8 +178,19 @@ def run_corpus(
     corpus_path: Path = CORPUS_PATH,
     only: Optional[str] = None,
     warm_encoder: bool = True,
+    cold_encoder: bool = False,
 ) -> Dict[str, Any]:
-    """Run all cases (or a single one if `only` is set). Returns a summary."""
+    """Run all cases (or a single one if `only` is set). Returns a summary.
+
+    Args:
+        warm_encoder: pre-warm the encoder once before grading. All
+            subsequent StateStores share _MODEL_CACHE so per-case
+            overhead is sub-100ms.
+        cold_encoder: NEW in v0.9.5. Force every per-case StateStore to
+            use a never-warmed LazyEncoder (encode() returns None).
+            This exercises the production cold-start path that the
+            v0.9.4 bench missed. When True, `warm_encoder` is ignored.
+    """
     with open(corpus_path, "r", encoding="utf-8") as f:
         corpus = json.load(f)
 
@@ -190,7 +201,7 @@ def run_corpus(
 
     # Pre-warm the encoder once so per-case StateStore creation is fast.
     # All subsequent stores share _MODEL_CACHE.
-    if warm_encoder:
+    if warm_encoder and not cold_encoder:
         from aether.mcp.state import StateStore
         with tempfile.TemporaryDirectory() as td:
             warm_store = StateStore(state_path=str(Path(td) / "warm.json"))
@@ -200,7 +211,15 @@ def run_corpus(
     def _store_factory():
         from aether.mcp.state import StateStore
         td = tempfile.mkdtemp(prefix="bench_")
-        return StateStore(state_path=str(Path(td) / "state.json"))
+        store = StateStore(state_path=str(Path(td) / "state.json"))
+        if cold_encoder:
+            # Replace with a fresh, never-warmed LazyEncoder. Its
+            # encode() returns None, simulating production cold-start.
+            from aether._lazy_encoder import LazyEncoder
+            cold = LazyEncoder()
+            store._encoder = cold
+            store.meter._encoder = cold
+        return store
 
     results = [run_case(c, _store_factory) for c in corpus]
 
@@ -309,12 +328,17 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--format", choices=["markdown", "json"], default="markdown")
     parser.add_argument("--no-warm", action="store_true",
                         help="skip encoder warmup (faster but less accurate)")
+    parser.add_argument("--cold-encoder", action="store_true",
+                        help="force cold-encoder mode (substring/Jaccard "
+                             "fallback) -- exercises the production "
+                             "cold-start path the v0.9.4 bench missed")
     args = parser.parse_args(argv)
 
     summary = run_corpus(
         corpus_path=Path(args.corpus),
         only=args.only,
         warm_encoder=not args.no_warm,
+        cold_encoder=args.cold_encoder,
     )
 
     if args.format == "json":

@@ -494,11 +494,25 @@ class StructuralTensionMeter:
         """Encode text to embedding vector.
 
         If no encoder was injected, returns an empty array (graceful fallback).
+
+        v0.9.5: also handles `None` returns from a non-blocking encoder
+        (e.g. aether._lazy_encoder.LazyEncoder when not yet warm). Without
+        this, downstream `_compute_similarity` does `vector.size` on None
+        and raises AttributeError, which the caller swallows via
+        `try/except: continue` — silently skipping the entire grounding
+        loop body in cold-encoder mode. That was the v0.9.4 production
+        miss: methodological detection, auto-link, and contradiction-on-
+        write all "worked" in unit tests (which force-load the encoder)
+        but were no-ops in production for the first ~30s after MCP server
+        start.
         """
         if self._encoder is None:
             return np.array([])
         try:
-            return self._encoder.encode(text)
+            result = self._encoder.encode(text)
+            if result is None:
+                return np.array([])
+            return result
         except Exception:
             logger.debug("[TENSION] Embedding failed for: %s", text[:80])
             return np.array([])

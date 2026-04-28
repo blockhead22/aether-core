@@ -61,6 +61,11 @@ from aether.memory import (
 # trust-weighted average of the top-K most relevant memories.
 GROUNDING_TOP_K = 5
 GROUNDING_MIN_SCORE = 0.15  # Below this similarity, the memory isn't relevant
+# v0.9.5: substring scores are typically lower than embedding scores (the
+# combined score in embedding mode = 0.7*cosine + 0.3*substring; in cold
+# mode it's just substring). Use a lower floor when running cold so
+# clearly-related memories at substring score 0.10-0.15 still surface.
+GROUNDING_MIN_SCORE_SUBSTRING = 0.10
 SENTINEL_BELIEF_CONF = 0.5  # Treat 0.5 as "caller didn't supply real value"
 
 # Auto-contradiction-detection threshold on write:
@@ -69,14 +74,26 @@ SENTINEL_BELIEF_CONF = 0.5  # Treat 0.5 as "caller didn't supply real value"
 TENSION_TOP_K = 8
 TENSION_CONFLICT_THRESHOLD = 0.55
 
-# Auto-link threshold for RELATED_TO edges (v0.9.1 fix).
+# Auto-link threshold for RELATED_TO edges (v0.9.1 fix, refined v0.9.5).
 # In the same top-K candidate scan that catches contradictions, any
 # candidate above this similarity that did NOT trigger a CONTRADICTS
 # edge gets a bidirectional RELATED_TO edge. Without this, the MCP
 # write surface produces orphan nodes and aether_path returns only
 # the target — that's the bug v0.9.0 shipped.
-# Override per-process with $AETHER_AUTO_LINK_THRESHOLD.
+#
+# v0.9.5: ADAPTIVE THRESHOLD. The original 0.7 was tuned for embedding
+# cosine similarity (sentence-transformers all-MiniLM-L6-v2). When the
+# encoder is cold (first ~30s after MCP server start), `link_sim` is
+# Jaccard token-overlap instead — and Jaccard rarely hits 0.7 even on
+# clearly-related text. The agent's v0.9.4 re-run caught this:
+# `aether_remember` writes produced orphan nodes in production despite
+# v0.9.1's auto-link existing, because the threshold was unreachable
+# in substring mode. Use a separate, lower threshold when the link_sim
+# came from Jaccard rather than embedding cosine.
 AUTO_LINK_THRESHOLD = float(os.environ.get("AETHER_AUTO_LINK_THRESHOLD", "0.7"))
+AUTO_LINK_THRESHOLD_SUBSTRING = float(
+    os.environ.get("AETHER_AUTO_LINK_THRESHOLD_SUBSTRING", "0.4")
+)
 
 # Policy contradiction detection (for sanction-time gating).
 # StructuralTensionMeter is fact-vs-fact and misses command-vs-prohibition,
@@ -499,13 +516,32 @@ class StateStore:
                 # enough, wire a RELATED_TO edge so aether_path has
                 # something to walk. Bidirectional because RELATED_TO is
                 # semantically symmetric (Dijkstra walks in_edges).
-                link_sim = result.supporting_signals.get(
-                    "embedding_similarity", sim,
+                #
+                # v0.9.5: ADAPTIVE THRESHOLD. When the encoder is cold,
+                # `sim` is Jaccard token-overlap (typically 0.0-0.5) and
+                # the meter populates embedding_similarity=0.0 (not None,
+                # so `is not None` checks don't distinguish modes). Use
+                # the encoder's is_loaded state to pick the threshold:
+                # AUTO_LINK_THRESHOLD (0.7) for embeddings, otherwise
+                # AUTO_LINK_THRESHOLD_SUBSTRING (0.4 default).
+                encoder_ready = (
+                    self._encoder is not None and self._encoder.is_loaded
                 )
-                if link_sim >= AUTO_LINK_THRESHOLD:
+                if encoder_ready:
+                    link_sim = result.supporting_signals.get(
+                        "embedding_similarity", sim,
+                    )
+                    threshold = AUTO_LINK_THRESHOLD
+                    mode = "embedding"
+                else:
+                    link_sim = sim  # Jaccard token overlap fallback
+                    threshold = AUTO_LINK_THRESHOLD_SUBSTRING
+                    mode = "substring"
+                if link_sim >= threshold:
                     metadata = {
                         "similarity": float(round(link_sim, 4)),
                         "auto": True,
+                        "mode": mode,
                     }
                     self.graph.add_edge(
                         other.memory_id, memory_id,
@@ -670,10 +706,13 @@ class StateStore:
         wires orphans.
 
         Args:
-            threshold: cosine threshold (defaults to AUTO_LINK_THRESHOLD)
+            threshold: similarity threshold. When None (default), the
+                threshold is mode-adaptive (v0.9.5): AUTO_LINK_THRESHOLD
+                (0.7) for embedding cosine, AUTO_LINK_THRESHOLD_SUBSTRING
+                (0.4) for Jaccard fallback. Pass an explicit value to
+                override.
         """
-        if threshold is None:
-            threshold = AUTO_LINK_THRESHOLD
+        explicit_threshold = threshold
         memories = list(self.graph.all_memories())
         added = 0
         skipped_existing_edge = 0
@@ -690,10 +729,19 @@ class StateStore:
                 b_emb = self.graph.get_embedding(b.memory_id)
                 if a_emb is not None and b_emb is not None:
                     sim = self._cosine(a_emb, b_emb)
+                    mode = "embedding"
                 else:
                     ta = set(a.text.lower().split())
                     tb = set(b.text.lower().split())
                     sim = len(ta & tb) / max(len(ta | tb), 1)
+                    mode = "substring"
+                # v0.9.5: per-pair adaptive threshold when no explicit override
+                if explicit_threshold is not None:
+                    threshold = explicit_threshold
+                elif mode == "embedding":
+                    threshold = AUTO_LINK_THRESHOLD
+                else:
+                    threshold = AUTO_LINK_THRESHOLD_SUBSTRING
                 if sim < threshold:
                     skipped_low_sim += 1
                     continue
@@ -701,6 +749,7 @@ class StateStore:
                     "similarity": float(round(sim, 4)),
                     "auto": True,
                     "source": "backfill",
+                    "mode": mode,
                 }
                 self.graph.add_edge(
                     a.memory_id, b.memory_id,
@@ -830,7 +879,15 @@ class StateStore:
 
         method = "embedding" if results[0].get("similarity") is not None else "substring"
 
-        kept = [r for r in results if r["score"] >= GROUNDING_MIN_SCORE][:top_k]
+        # v0.9.5: adaptive minimum score. Substring scores are lower; use
+        # GROUNDING_MIN_SCORE_SUBSTRING (0.10) in cold mode, GROUNDING_MIN_SCORE
+        # (0.15) in embedding mode.
+        min_score = (
+            GROUNDING_MIN_SCORE
+            if method == "embedding"
+            else GROUNDING_MIN_SCORE_SUBSTRING
+        )
+        kept = [r for r in results if r["score"] >= min_score][:top_k]
         if not kept:
             return {
                 "belief_confidence": 0.3,

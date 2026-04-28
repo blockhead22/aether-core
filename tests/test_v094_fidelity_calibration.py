@@ -100,3 +100,57 @@ class TestFidelityCalibration:
         present = set(summary["per_category"].keys())
         missing = required_categories - present
         assert not missing, f"corpus is missing categories: {missing}"
+
+
+@needs_networkx
+class TestFidelityCalibrationColdMode:
+    """v0.9.5: same corpus, cold encoder. Runs the production cold-start
+    code path that the v0.9.4 warm-only bench missed.
+
+    Cold-mode rates are inherently lower than warm-mode for some
+    categories — slot extraction and embedding-similarity-gated checks
+    (policy, negation_asymmetry, factual slot conflicts) need
+    embeddings to function. Categories that work cold:
+      - mutex_contradiction (regex-based)
+      - methodological_overclaim (text+source-tag based)
+      - false_positive_guard (negative tests)
+      - no_issue_unrelated (negative tests)
+
+    These assertions establish the v0.9.5 cold-mode baseline. Future
+    fixes that expand cold-mode coverage will need to update the
+    expected rates upward (good problem to have)."""
+
+    @pytest.fixture(scope="class")
+    def cold_summary(self):
+        return run_corpus(cold_encoder=True)
+
+    def test_methodological_cold_mode_at_least_80_percent(self, cold_summary):
+        """v0.9.5 baseline: methodological detection works in cold mode
+        for 4/5 cases. The 5th requires embedding retrieval (substring
+        score below threshold even after the 0.10 floor)."""
+        cat = cold_summary["per_category"].get("methodological_overclaim", {})
+        total = cat.get("pass", 0) + cat.get("fail", 0)
+        rate = cat.get("pass", 0) / total if total else 0.0
+        assert rate >= 0.8, (
+            f"methodological cold-mode rate {rate*100:.1f}% < 80% baseline. "
+            f"Regression in v0.9.5 cold-encoder support."
+        )
+
+    def test_mutex_cold_mode_is_100_percent(self, cold_summary):
+        """Mutex detection is regex-based and must work without any
+        embeddings. If this regresses, the cold-mode path is broken."""
+        cat = cold_summary["per_category"].get("mutex_contradiction", {})
+        assert cat.get("fail", 0) == 0, (
+            f"mutex cold-mode failed {cat['fail']} cases — regex-based "
+            f"contradiction detection regressed"
+        )
+
+    def test_false_positive_guards_hold_in_cold_mode(self, cold_summary):
+        """Specificity must hold in BOTH modes — methodological /
+        contradiction detection must not spuriously fire on unrelated
+        text just because we're in cold mode with looser thresholds."""
+        cat = cold_summary["per_category"].get("false_positive_guard", {})
+        assert cat.get("fail", 0) == 0, (
+            f"false_positive_guard cold-mode failed {cat['fail']} cases "
+            f"— v0.9.5 lower thresholds caused spurious firing"
+        )
