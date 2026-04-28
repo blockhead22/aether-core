@@ -192,7 +192,26 @@ def build_server(store: Optional[StateStore] = None) -> FastMCP:
             if tier == GovernanceTier.SAFE:
                 tier = GovernanceTier.FLAG
 
+        # v0.10: open an ActionReceipt as the sanction fires. Caller cites
+        # the returned action_id when calling aether_receipt to record what
+        # actually happened. The receipt closes the governance loop:
+        # sanction is the gate, receipts are the audit trail.
+        sanction_memory_ids = (
+            [m.get("memory_id") for m in grounding.get("support", [])[:3]
+             if m.get("memory_id")]
+            + [m.get("memory_id") for m in contradicting[:3]
+               if m.get("memory_id")]
+            + [m.get("memory_id") for m in methodological[:3]
+               if m.get("memory_id")]
+        )
+        action_id = store.open_receipt(
+            action=action,
+            sanction_verdict=verdict,
+            sanction_memory_ids=sanction_memory_ids,
+        )
+
         return {
+            "action_id": action_id,
             "verdict": verdict,
             "tier": tier.value,
             "should_block": verdict == "REJECT",
@@ -431,6 +450,105 @@ def build_server(store: Optional[StateStore] = None) -> FastMCP:
             )
         except (ValueError, KeyError) as e:
             return {"error": str(e), "type": e.__class__.__name__}
+
+    # ==================================================================
+    # Action receipts — the audit half of the governance loop (v0.10)
+    # ==================================================================
+
+    @mcp.tool()
+    def aether_receipt(
+        action_id: str,
+        result: str,
+        tool_name: str = "",
+        target: str = "",
+        reversible: bool = False,
+        reverse_action: str = "",
+        details: Optional[dict] = None,
+        verification_passed: Optional[bool] = None,
+        verification_reason: str = "",
+        model_attribution: str = "",
+    ) -> dict:
+        """Record the outcome of a sanctioned action (v0.10).
+
+        Every aether_sanction call returns an action_id. After the caller
+        executes (or skips) the proposed action, they cite that action_id
+        here with the actual result. This closes the governance loop:
+        sanction is the gate, receipts are the audit trail.
+
+        Args:
+            action_id: the id returned by aether_sanction
+            result: "success" | "error" | "partial" | "skipped"
+            tool_name: which tool actually ran ("shell", "git", "file_write", etc.)
+            target: path / URL / command / memory_id that was acted on
+            reversible: can the caller undo this action?
+            reverse_action: how to undo (if reversible)
+            details: arbitrary structured detail
+            verification_passed: did post-action verification succeed?
+            verification_reason: why pass/fail
+            model_attribution: which LLM produced the action (useful for
+                cross-vendor analysis)
+        """
+        try:
+            return store.record_receipt(
+                receipt_id=action_id,
+                result=result,
+                tool_name=tool_name or None,
+                target=target or None,
+                reversible=reversible,
+                reverse_action=reverse_action or None,
+                details=details or None,
+                verification_passed=verification_passed,
+                verification_reason=verification_reason or None,
+                model_attribution=model_attribution or None,
+            )
+        except KeyError as e:
+            return {"error": str(e), "type": "KeyError"}
+
+    @mcp.tool()
+    def aether_receipts(
+        limit: int = 20,
+        result_filter: str = "",
+        verdict_filter: str = "",
+        only_open: bool = False,
+    ) -> dict:
+        """List receipts, newest first (v0.10).
+
+        Filters:
+            result_filter   only receipts with matching `result` field
+                            (e.g. "error" to find failed actions)
+            verdict_filter  only receipts whose sanction returned this
+                            verdict (e.g. "REJECT" to find blocked actions)
+            only_open       only receipts that have not yet had their
+                            outcome recorded (sanctioned but loop not closed)
+        """
+        return {
+            "receipts": store.list_receipts(
+                limit=limit,
+                result_filter=result_filter or None,
+                verdict_filter=verdict_filter or None,
+                only_open=only_open,
+            ),
+        }
+
+    @mcp.tool()
+    def aether_receipt_detail(receipt_id: str) -> dict:
+        """Full record for a single receipt (v0.10)."""
+        r = store.get_receipt(receipt_id)
+        if r is None:
+            return {"error": f"unknown receipt_id: {receipt_id}", "type": "KeyError"}
+        return r
+
+    @mcp.tool()
+    def aether_receipt_summary() -> dict:
+        """Aggregate stats over all receipts (v0.10).
+
+        Returns counts of verdicts (APPROVE/HOLD/REJECT), outcomes
+        (success/error/partial/skipped), open receipts (sanctioned but
+        loop not closed), and verification pass rate. The number to
+        watch is `open_receipts` — high counts mean the agent is
+        sanctioning actions but not closing the loop.
+        """
+        return store.receipt_summary()
 
     @mcp.tool()
     def aether_session_diff(since: float) -> dict:

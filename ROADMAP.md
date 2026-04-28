@@ -2,6 +2,69 @@
 
 What is shipped today, what is coming next, and what is intentionally not in this repo.
 
+## Shipped (v0.10.0)
+
+### Action receipts — the audit half of the governance loop
+
+The first port from the main repo (`personal_agent/action_receipts.py`)
+to OSS under the new OSS-focus pivot. Up through v0.9.5, OSS had the
+*gate* (aether_sanction returns APPROVE / HOLD / REJECT) but no
+*audit trail* of what actually executed and what its outcome was. That
+left the governance loop half-open: pre-action verdicts but no
+post-action verification.
+
+**Closes the loop**:
+
+1. `aether_sanction` now opens an `ActionReceipt` and returns its
+   `action_id` in the response. The receipt is created with the
+   sanction verdict, the supporting / contradicting / methodological
+   memory IDs that informed it, but no outcome yet.
+2. The caller (agent / tool / human) cites that `action_id` in
+   `aether_receipt(action_id, result, ...)` after executing or
+   skipping the action. The receipt fills in `tool_name`, `target`,
+   `result` (success / error / partial / skipped), `details`,
+   verification status, and optional model attribution.
+3. `aether_receipts` lists receipts (filterable by result, verdict,
+   or only-open) newest-first. `aether_receipt_detail` returns one
+   full record. `aether_receipt_summary` aggregates counts of
+   verdicts, outcomes, open receipts, and verification pass rate.
+
+**Persistence**: JSON side-car at `<state_path>_receipts.json`,
+consistent with the existing `_trust_history.json` pattern. Round-trips
+across StateStore restarts.
+
+**Open / closed signal**: `open_receipts > 0` in the summary means the
+agent is sanctioning actions but not closing the loop — a real signal
+worth surfacing in the next session-start brief.
+
+**Ported from main, tightened for OSS**:
+
+- Dropped: SQLite (use the existing JSON state pattern instead),
+  thread_id, agent_name, orchestration_id, run_step_id,
+  expectation_keywords (all personal_agent-specific).
+- Kept: receipt_id, timestamp, action, sanction_verdict, tool_name,
+  target, result, reversible, reverse_action, details,
+  verification_passed, verification_reason, model_attribution,
+  completed_at, sanction_memory_ids.
+
+22 new tests in `tests/test_v100_action_receipts.py`. **260 tests
+total** (was 238). MCP surface grew from 16 tools to 20:
+- `aether_sanction` — gains `action_id` in response (backward-compatible
+  additive)
+- `aether_receipt` — record outcome after execution (NEW)
+- `aether_receipts` — list / filter receipts (NEW)
+- `aether_receipt_detail` — one full record (NEW)
+- `aether_receipt_summary` — aggregate stats (NEW)
+
+**This is the first ship under the OSS-focus pivot.** The strategic
+context: aether-core is now the primary track for thesis-foundational
+mechanisms; main repo continues as research and Electron-app workshop.
+v0.10 is the start of porting the parts of main that belong in OSS:
+runtime governance loop (action receipts here), runtime belief/speech
+gap detector (belief_speech_engine, future v0.10.x), lightweight
+self-model + reflection primitives (future). Closed-side stays closed:
+DNNT training pipeline, Electron app, multi-user / hosted features.
+
 ## Shipped (v0.9.5)
 
 ### Governance works in cold-encoder mode (the v0.9.4 production miss)

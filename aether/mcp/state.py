@@ -22,7 +22,9 @@ import math
 import os
 import time
 from pathlib import Path
+from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Tuple
+import uuid
 
 from aether._lazy_encoder import (
     LazyEncoder,
@@ -272,6 +274,53 @@ def _trust_history_path(state_path: str) -> str:
     return state_path.replace(".json", "_trust_history.json")
 
 
+def _receipts_path(state_path: str) -> str:
+    """Side-car file: action receipts (v0.10).
+
+    Closes the governance loop: aether_sanction is the gate, receipts are
+    the audit trail of what actually executed and what its outcome was.
+    """
+    return state_path.replace(".json", "_receipts.json")
+
+
+# ---------------------------------------------------------------------------
+# Action receipts (v0.10) — ported from personal_agent/action_receipts.py
+# ---------------------------------------------------------------------------
+
+@dataclass
+class ActionReceipt:
+    """A single action's audit record.
+
+    Created at sanction time with the verdict, then updated with the
+    actual outcome via aether_receipt once the caller has executed
+    (or skipped) the action. Persisted to a side-car JSON file at
+    `<state_path>_receipts.json`.
+
+    Fields ported from main repo's ActionReceipt; personal_agent-specific
+    fields (thread_id, agent_name, orchestration_id, run_step_id,
+    expectation_keywords) are dropped because they don't apply to OSS
+    single-substrate use. model_attribution is kept because it's useful
+    for the cross-vendor validation work coming up.
+    """
+
+    receipt_id: str                          # uuid4 string
+    timestamp: float                         # creation time (set at sanction)
+    action: str                              # human description of the proposed action
+    sanction_verdict: str                    # APPROVE / HOLD / REJECT
+    tool_name: Optional[str] = None          # "shell", "file_write", "git", etc.
+    target: Optional[str] = None             # path / URL / command / memory_id
+    result: Optional[str] = None             # success / error / partial / skipped
+    reversible: Optional[bool] = None        # can the caller undo it?
+    reverse_action: Optional[str] = None     # how to undo (if reversible)
+    details: Dict[str, Any] = field(default_factory=dict)
+    verification_passed: Optional[bool] = None
+    verification_reason: Optional[str] = None
+    model_attribution: Optional[str] = None  # which LLM produced the action
+    completed_at: Optional[float] = None     # set when aether_receipt is called
+    sanction_memory_ids: List[str] = field(default_factory=list)
+    # ^ supporting + contradicting memory_ids that informed the sanction
+
+
 # ---------------------------------------------------------------------------
 # Lightweight encoder wrapper
 # ---------------------------------------------------------------------------
@@ -320,15 +369,37 @@ class StateStore:
         self._id_counter = itertools.count(1)
         self._trust_history: Dict[str, List[Dict[str, Any]]] = {}
         self._load_trust_history()
+        # v0.10: action receipts (the audit trail half of the governance loop)
+        self._receipts: Dict[str, Dict[str, Any]] = {}
+        self._load_receipts()
 
     # ------------------------------------------------------------------
     # Persistence
     # ------------------------------------------------------------------
 
     def save(self) -> None:
-        """Persist the graph + trust history to disk."""
+        """Persist the graph + trust history + receipts to disk."""
         self.graph.save(self.state_path)
         self._save_trust_history()
+        self._save_receipts()
+
+    def _save_receipts(self) -> None:
+        path = _receipts_path(self.state_path)
+        try:
+            with open(path, "w") as f:
+                json.dump(self._receipts, f, indent=2)
+        except OSError:
+            pass
+
+    def _load_receipts(self) -> None:
+        path = _receipts_path(self.state_path)
+        if not os.path.exists(path):
+            return
+        try:
+            with open(path) as f:
+                self._receipts = json.load(f)
+        except (OSError, json.JSONDecodeError):
+            self._receipts = {}
 
     def _save_trust_history(self) -> None:
         path = _trust_history_path(self.state_path)
@@ -1607,6 +1678,157 @@ class StateStore:
                 "memories_added": len(new_memories),
                 "trust_changes": sum(len(c["changes"]) for c in recent_corrections),
                 "contradictions_added": len(new_contradictions),
+            },
+        }
+
+    # ------------------------------------------------------------------
+    # Action receipts (v0.10) — the audit half of the governance loop
+    # ------------------------------------------------------------------
+
+    def open_receipt(
+        self,
+        action: str,
+        sanction_verdict: str,
+        sanction_memory_ids: Optional[List[str]] = None,
+    ) -> str:
+        """Create a new receipt at sanction time. Returns the receipt_id.
+
+        Called from aether_sanction. The receipt starts in 'open' state
+        with no result yet; the caller updates it with aether_receipt
+        once the action has executed (or been skipped).
+        """
+        rid = str(uuid.uuid4())
+        receipt = ActionReceipt(
+            receipt_id=rid,
+            timestamp=time.time(),
+            action=action,
+            sanction_verdict=sanction_verdict,
+            sanction_memory_ids=list(sanction_memory_ids or []),
+        )
+        from dataclasses import asdict
+        self._receipts[rid] = asdict(receipt)
+        self._save_receipts()
+        return rid
+
+    def record_receipt(
+        self,
+        receipt_id: str,
+        result: str,
+        tool_name: Optional[str] = None,
+        target: Optional[str] = None,
+        reversible: Optional[bool] = None,
+        reverse_action: Optional[str] = None,
+        details: Optional[Dict[str, Any]] = None,
+        verification_passed: Optional[bool] = None,
+        verification_reason: Optional[str] = None,
+        model_attribution: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Update an existing receipt with the actual outcome.
+
+        Called by the agent after it has executed (or skipped) a
+        sanctioned action. Preserves the original sanction verdict and
+        sanction_memory_ids; fills in tool_name, target, result, details.
+        """
+        if receipt_id not in self._receipts:
+            raise KeyError(f"unknown receipt_id: {receipt_id}")
+        r = self._receipts[receipt_id]
+        r["result"] = result
+        r["completed_at"] = time.time()
+        if tool_name is not None:
+            r["tool_name"] = tool_name
+        if target is not None:
+            r["target"] = target
+        if reversible is not None:
+            r["reversible"] = reversible
+        if reverse_action is not None:
+            r["reverse_action"] = reverse_action
+        if details is not None:
+            r["details"] = details
+        if verification_passed is not None:
+            r["verification_passed"] = verification_passed
+        if verification_reason is not None:
+            r["verification_reason"] = verification_reason
+        if model_attribution is not None:
+            r["model_attribution"] = model_attribution
+        self._save_receipts()
+        return dict(r)
+
+    def get_receipt(self, receipt_id: str) -> Optional[Dict[str, Any]]:
+        """Return one receipt's full record, or None if unknown."""
+        r = self._receipts.get(receipt_id)
+        return dict(r) if r is not None else None
+
+    def list_receipts(
+        self,
+        limit: int = 20,
+        result_filter: Optional[str] = None,
+        verdict_filter: Optional[str] = None,
+        only_open: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """List receipts, newest first.
+
+        Filters:
+            result_filter   only receipts with matching `result` field
+            verdict_filter  only receipts with matching sanction_verdict
+            only_open       only receipts with no result yet (sanctioned but
+                            outcome not recorded)
+        """
+        rs = list(self._receipts.values())
+        rs.sort(key=lambda r: r.get("timestamp", 0), reverse=True)
+        out: List[Dict[str, Any]] = []
+        for r in rs:
+            if result_filter is not None and r.get("result") != result_filter:
+                continue
+            if verdict_filter is not None and r.get("sanction_verdict") != verdict_filter:
+                continue
+            if only_open and r.get("result") is not None:
+                continue
+            out.append(dict(r))
+            if len(out) >= limit:
+                break
+        return out
+
+    def receipt_summary(self) -> Dict[str, Any]:
+        """Aggregate stats over all receipts: counts, verdict breakdown,
+        outcome breakdown, verification pass rate.
+
+        The number to watch: open receipts (sanctioned actions that
+        never had their outcome recorded). High counts of those mean
+        the agent isn't closing the loop.
+        """
+        rs = list(self._receipts.values())
+        total = len(rs)
+        verdicts: Dict[str, int] = {}
+        results: Dict[str, int] = {}
+        verified = 0
+        passed = 0
+        failed = 0
+        open_count = 0
+        for r in rs:
+            v = r.get("sanction_verdict", "unknown")
+            verdicts[v] = verdicts.get(v, 0) + 1
+            res = r.get("result")
+            if res is None:
+                open_count += 1
+            else:
+                results[res] = results.get(res, 0) + 1
+            vp = r.get("verification_passed")
+            if vp is not None:
+                verified += 1
+                if vp:
+                    passed += 1
+                else:
+                    failed += 1
+        return {
+            "total_receipts": total,
+            "verdicts": verdicts,
+            "results": results,
+            "open_receipts": open_count,
+            "verification": {
+                "total_verified": verified,
+                "passed": passed,
+                "failed": failed,
+                "pass_rate": round(passed / verified, 3) if verified else None,
             },
         }
 
