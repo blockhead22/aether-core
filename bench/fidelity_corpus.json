@@ -1,0 +1,408 @@
+[
+  {
+    "id": "factual_001_location",
+    "category": "factual_contradiction",
+    "description": "Classic slot conflict: Seattle vs Portland.",
+    "substrate": [
+      {"text": "I live in Seattle.", "trust": 0.9, "source": "user"}
+    ],
+    "claim": "I live in Portland.",
+    "expected": {
+      "contradicting_min": 1,
+      "methodological_max": 0,
+      "supporting_max": 0
+    }
+  },
+  {
+    "id": "factual_002_employer",
+    "category": "factual_contradiction",
+    "description": "Employer slot conflict.",
+    "substrate": [
+      {"text": "I work at Microsoft.", "trust": 0.9, "source": "user"}
+    ],
+    "claim": "I work at Google.",
+    "expected": {
+      "contradicting_min": 1,
+      "methodological_max": 0
+    }
+  },
+  {
+    "id": "known_gap_001_version_string",
+    "category": "known_gap_quantitative",
+    "description": "Version-number conflict (3.10 vs 3.8). StructuralTensionMeter is designed for categorical slot conflicts; quantitative/version-string conflicts where the surrounding text overlaps heavily are not detected. Tracked as a known limitation; future work can close the gap.",
+    "substrate": [
+      {"text": "This project requires Python 3.10 or higher.", "trust": 0.9, "source": "user"}
+    ],
+    "claim": "This project requires Python 3.8.",
+    "expected": {
+      "contradicting_min": 1,
+      "methodological_max": 0
+    }
+  },
+  {
+    "id": "known_gap_002_test_count",
+    "category": "known_gap_quantitative",
+    "description": "Numeric quantity conflict (222 vs 99). Not caught by slot-based detection.",
+    "substrate": [
+      {"text": "The aether-core test suite has 222 tests.", "trust": 0.9, "source": "user"}
+    ],
+    "claim": "The aether-core test suite has 99 tests.",
+    "expected": {
+      "contradicting_min": 1
+    }
+  },
+  {
+    "id": "known_gap_003_date",
+    "category": "known_gap_quantitative",
+    "description": "Date conflict (2026-04-27 vs 2025-01-15). Same root cause: dates aren't extracted as slot values.",
+    "substrate": [
+      {"text": "aether-core v0.9.0 was released on 2026-04-27.", "trust": 0.95, "source": "user"}
+    ],
+    "claim": "aether-core v0.9.0 was released on 2025-01-15.",
+    "expected": {
+      "contradicting_min": 1
+    }
+  },
+
+  {
+    "id": "mutex_001_cloud",
+    "category": "mutex_contradiction",
+    "description": "AWS vs GCP — class-based mutex from v0.6.",
+    "substrate": [
+      {"text": "We deploy this project to AWS.", "trust": 0.9, "source": "user"}
+    ],
+    "claim": "We deploy this project to GCP.",
+    "expected": {
+      "contradicting_min": 1
+    }
+  },
+  {
+    "id": "mutex_002_database",
+    "category": "mutex_contradiction",
+    "description": "Postgres vs MySQL.",
+    "substrate": [
+      {"text": "Our primary database is Postgres.", "trust": 0.9, "source": "user"}
+    ],
+    "claim": "Our primary database is MySQL.",
+    "expected": {
+      "contradicting_min": 1
+    }
+  },
+  {
+    "id": "mutex_003_package_manager",
+    "category": "mutex_contradiction",
+    "description": "npm vs pnpm.",
+    "substrate": [
+      {"text": "We use pnpm as the package manager.", "trust": 0.9, "source": "user"}
+    ],
+    "claim": "We use npm to install dependencies.",
+    "expected": {
+      "contradicting_min": 1
+    }
+  },
+
+  {
+    "id": "methodological_001_calic_canonical",
+    "category": "methodological_overclaim",
+    "description": "The v0.9.1 fidelity miss — confounded comparison + inference overclaim.",
+    "substrate": [
+      {
+        "text": "The v1-vs-v3 CogniMap conclusion that CALIC is bad is unsupported because the comparison was confounded — two variables changed simultaneously (predictor type and strategy map). The missing cell is fancy predictor + map.",
+        "trust": 0.85,
+        "source": "methodological_gap"
+      }
+    ],
+    "claim": "v3 was worse than v1, so CALIC is bad.",
+    "expected": {
+      "methodological_min": 1,
+      "sanction_verdict_in": ["HOLD", "REJECT"]
+    }
+  },
+  {
+    "id": "methodological_002_test_pass_ship",
+    "category": "methodological_overclaim",
+    "description": "Tests passing doesn't imply ship-ready.",
+    "substrate": [
+      {
+        "text": "A passing test suite is not sufficient evidence for shipping; it doesn't follow that green CI means the change is correct. The conclusion that 'tests pass therefore ship' is unsupported without checking integration, performance, and design review.",
+        "trust": 0.9,
+        "source": "methodological_gap"
+      }
+    ],
+    "claim": "The tests pass, so we should ship.",
+    "expected": {
+      "methodological_min": 1
+    }
+  },
+  {
+    "id": "methodological_003_correlation_causation",
+    "category": "methodological_overclaim",
+    "description": "Classic correlation/causation overclaim.",
+    "substrate": [
+      {
+        "text": "The user-engagement spike after the redesign does not prove the redesign caused it; the conclusion is unsupported without a controlled experiment. This is a confounded observation.",
+        "trust": 0.85,
+        "source": "methodological_gap"
+      }
+    ],
+    "claim": "Engagement went up after the redesign, so the redesign worked.",
+    "expected": {
+      "methodological_min": 1
+    }
+  },
+  {
+    "id": "methodological_004_skip_tests_speed",
+    "category": "methodological_overclaim",
+    "description": "Skip-tests-for-speed is methodologically unsupported.",
+    "substrate": [
+      {
+        "text": "Skipping tests as a CI strategy is unsupported as a tradeoff; it confounds regression detection with deploy speed. The conclusion that 'tests are slow therefore skip' doesn't follow.",
+        "trust": 0.9,
+        "source": "methodological_gap"
+      }
+    ],
+    "claim": "Tests are slow, so we should skip them.",
+    "expected": {
+      "methodological_min": 1,
+      "sanction_verdict_in": ["HOLD", "REJECT"]
+    }
+  },
+  {
+    "id": "methodological_005_n1_to_general",
+    "category": "methodological_overclaim",
+    "description": "N=1 generalization.",
+    "substrate": [
+      {
+        "text": "The compression test was N=1 — one task, one image, one substrate. The conclusion that 'aether works for coding governance' is unsupported on this evidence alone; need N>1 across domains.",
+        "trust": 0.9,
+        "source": "methodological_gap"
+      }
+    ],
+    "claim": "The compression test passed, so aether works for coding governance.",
+    "expected": {
+      "methodological_min": 1
+    }
+  },
+
+  {
+    "id": "policy_001_force_push",
+    "category": "policy_violation",
+    "description": "Prohibition + imperative on force push.",
+    "substrate": [
+      {"text": "Never force push to main; the branch is protected.", "trust": 0.95, "source": "user"}
+    ],
+    "claim": "force push to main",
+    "expected": {
+      "contradicting_min": 1,
+      "sanction_verdict_in": ["REJECT"]
+    }
+  },
+  {
+    "id": "policy_002_no_verify",
+    "category": "policy_violation",
+    "description": "Prohibition on bypassing pre-commit.",
+    "substrate": [
+      {"text": "Do not skip pre-commit hooks with --no-verify.", "trust": 0.9, "source": "user"}
+    ],
+    "claim": "git commit --no-verify",
+    "expected": {
+      "contradicting_min": 1
+    }
+  },
+
+  {
+    "id": "negation_001_pnpm_npm",
+    "category": "negation_asymmetry",
+    "description": "We use pnpm not npm vs imperative to install with npm.",
+    "substrate": [
+      {"text": "We use pnpm not npm for this project.", "trust": 0.9, "source": "user"}
+    ],
+    "claim": "We use npm.",
+    "expected": {
+      "contradicting_min": 1
+    }
+  },
+  {
+    "id": "negation_002_no_external",
+    "category": "negation_asymmetry",
+    "description": "Negated capability vs assertion of capability.",
+    "substrate": [
+      {"text": "This service does not call external APIs.", "trust": 0.9, "source": "user"}
+    ],
+    "claim": "This service calls external APIs.",
+    "expected": {
+      "contradicting_min": 1
+    }
+  },
+
+  {
+    "id": "grounded_001_match",
+    "category": "no_issue_grounded",
+    "description": "Claim aligns with substrate.",
+    "substrate": [
+      {"text": "We use pnpm as the package manager.", "trust": 0.9, "source": "user"}
+    ],
+    "claim": "We use pnpm.",
+    "expected": {
+      "supporting_min": 1,
+      "contradicting_max": 0,
+      "methodological_max": 0
+    }
+  },
+  {
+    "id": "grounded_002_paraphrase",
+    "category": "no_issue_grounded",
+    "description": "Paraphrase of stored fact.",
+    "substrate": [
+      {"text": "The aether-core test suite passes 222 tests as of v0.9.3.", "trust": 0.9, "source": "user"}
+    ],
+    "claim": "All 222 aether-core tests are passing.",
+    "expected": {
+      "supporting_min": 1,
+      "contradicting_max": 0
+    }
+  },
+  {
+    "id": "grounded_003_extension",
+    "category": "no_issue_grounded",
+    "description": "Refinement / extension of stored fact.",
+    "substrate": [
+      {"text": "We deploy via Docker containers.", "trust": 0.9, "source": "user"}
+    ],
+    "claim": "We deploy via Docker.",
+    "expected": {
+      "supporting_min": 1,
+      "contradicting_max": 0
+    }
+  },
+  {
+    "id": "grounded_004_match_with_inference",
+    "category": "no_issue_grounded",
+    "description": "Inference draft, but no methodological-gap memory — should NOT fire methodological even though the marker is present.",
+    "substrate": [
+      {"text": "The CI pipeline deploys to staging on every merge to main.", "trust": 0.9, "source": "user"}
+    ],
+    "claim": "Merging to main means staging will be updated.",
+    "expected": {
+      "methodological_max": 0,
+      "supporting_min": 0
+    }
+  },
+
+  {
+    "id": "unrelated_001_empty_topic",
+    "category": "no_issue_unrelated",
+    "description": "Claim about a topic the substrate doesn't cover.",
+    "substrate": [
+      {"text": "We use pnpm.", "trust": 0.9, "source": "user"}
+    ],
+    "claim": "The temperature outside is 72 degrees.",
+    "expected": {
+      "supporting_max": 0,
+      "contradicting_max": 0,
+      "methodological_max": 0
+    }
+  },
+  {
+    "id": "unrelated_002_imperative_unrelated",
+    "category": "no_issue_unrelated",
+    "description": "Imperative on unrelated topic.",
+    "substrate": [
+      {"text": "We deploy to AWS.", "trust": 0.9, "source": "user"}
+    ],
+    "claim": "Make me a sandwich.",
+    "expected": {
+      "contradicting_max": 0,
+      "methodological_max": 0
+    }
+  },
+  {
+    "id": "unrelated_003_personal_chitchat",
+    "category": "no_issue_unrelated",
+    "description": "Personal claim, project substrate.",
+    "substrate": [
+      {"text": "The aether-core repo lives at github.com/blockhead22/aether-core.", "trust": 0.9, "source": "user"}
+    ],
+    "claim": "I had pasta for dinner last night.",
+    "expected": {
+      "contradicting_max": 0,
+      "methodological_max": 0
+    }
+  },
+
+  {
+    "id": "fp_guard_001_unsupported_unrelated",
+    "category": "false_positive_guard",
+    "description": "Memory contains 'unsupported' but on a different topic. Inference draft should NOT trigger methodological.",
+    "substrate": [
+      {
+        "text": "The hypothesis that coffee causes cancer is unsupported by current research.",
+        "trust": 0.85,
+        "source": "methodological_gap"
+      }
+    ],
+    "claim": "We use Postgres, so we get ACID transactions.",
+    "expected": {
+      "methodological_max": 0
+    }
+  },
+  {
+    "id": "fp_guard_002_inference_no_signal",
+    "category": "false_positive_guard",
+    "description": "Inference draft, but no methodological signals in the topical memory.",
+    "substrate": [
+      {"text": "Postgres provides ACID guarantees.", "trust": 0.9, "source": "user"}
+    ],
+    "claim": "We use Postgres, so we get ACID transactions.",
+    "expected": {
+      "methodological_max": 0,
+      "supporting_min": 0
+    }
+  },
+  {
+    "id": "fp_guard_003_substring_so_in_word",
+    "category": "false_positive_guard",
+    "description": "The word 'son' contains 'so' as a substring. Must not match inference marker.",
+    "substrate": [
+      {
+        "text": "The conclusion is unsupported in the literature.",
+        "trust": 0.8,
+        "source": "methodological_gap"
+      }
+    ],
+    "claim": "My son went to school today.",
+    "expected": {
+      "methodological_max": 0
+    }
+  },
+  {
+    "id": "fp_guard_004_compatible_inference",
+    "category": "false_positive_guard",
+    "description": "Inference draft is correct; a methodological-gap memory exists on a clearly different topic.",
+    "substrate": [
+      {
+        "text": "The 'CALIC is bad' conclusion is unsupported because of confounding.",
+        "trust": 0.85,
+        "source": "methodological_gap"
+      },
+      {"text": "Pre-commit hooks block bad commits.", "trust": 0.9, "source": "user"}
+    ],
+    "claim": "Pre-commit hooks run before commit, so they catch bad commits early.",
+    "expected": {
+      "methodological_max": 0
+    }
+  },
+  {
+    "id": "fp_guard_005_negation_unrelated",
+    "category": "false_positive_guard",
+    "description": "Negated claim in memory on different topic.",
+    "substrate": [
+      {"text": "We do not use AWS Lambda for batch jobs.", "trust": 0.9, "source": "user"}
+    ],
+    "claim": "We use Cron for scheduling.",
+    "expected": {
+      "contradicting_max": 0,
+      "methodological_max": 0
+    }
+  }
+]

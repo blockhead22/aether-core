@@ -2,6 +2,67 @@
 
 What is shipped today, what is coming next, and what is intentionally not in this repo.
 
+## Shipped (v0.9.4)
+
+### Fidelity calibration bench — measurable governance quality
+
+Layer 3 of the governance work. Until now, "fidelity catches the right
+things" was an anecdote: the v0.9.1 end-to-end test missed a
+methodological overclaim, v0.9.3 fixed it, and that was the only data
+point. v0.9.4 turns this into a measurable property.
+
+**Corpus** (`bench/fidelity_corpus.json`): 29 hand-curated cases across
+9 categories — factual contradictions, mutex contradictions, methodological
+overclaims, policy violations, negation-asymmetry, no-issue grounded
+claims, no-issue unrelated claims, false-positive guards, and known-gap
+quantitative cases. Each case is a `(substrate, claim, expected)` triple
+with constraints on which channels should fire and what verdict
+sanction should return.
+
+**Runner** (`bench/run_fidelity_bench.py`): builds a fresh substrate per
+case, seeds memories, runs `compute_grounding` and (when expected)
+`aether_sanction`, grades against the constraints. Outputs a
+markdown report with per-category pass rates plus a list of failing
+cases with diagnostic detail. Pre-warms the encoder once so per-case
+overhead is sub-100ms.
+
+**Pytest integration** (`tests/test_v094_fidelity_calibration.py`): five
+assertions enforced as part of the regular suite — every blocker
+category passes, blocker rate is exactly 100%, methodological recall is
+100% (Layer 2 regression guard), false-positive guards hold, corpus has
+coverage of every required category. So `pytest tests/` re-runs the
+bench every time. Regressions surface with per-case breakdowns.
+
+**Known-gap workflow**: categories prefixed `known_gap_` are tracked but
+don't trigger non-zero exit. This lets the bench be honest (visible
+failures, no hiding) and useful as CI (won't break for known
+limitations). When a fix lands, the case moves out of `known_gap_` and
+becomes a regression test.
+
+**Baseline numbers** (this release):
+
+| Category | Rate |
+|---|---|
+| factual_contradiction | 100% (2/2) |
+| mutex_contradiction | 100% (3/3) |
+| negation_asymmetry | 100% (2/2) |
+| policy_violation | 100% (2/2) |
+| methodological_overclaim | 100% (5/5) |
+| no_issue_grounded | 100% (4/4) |
+| no_issue_unrelated | 100% (3/3) |
+| false_positive_guard | 100% (5/5) |
+| known_gap_quantitative | 0% (0/3) — tracked, not blocking |
+
+Blocker pass rate: **26/26 (100%)**. Three known-gap cases document
+that the StructuralTensionMeter is built for categorical slot conflicts
+(Seattle vs Portland) and does NOT catch quantitative / version /
+date conflicts (Python 3.10 vs 3.8, 222 vs 99 tests, dates). Future
+work can close that gap; the bench will report when it does.
+
+227 tests pass (was 222). 5 new tests in
+`tests/test_v094_fidelity_calibration.py`. 29-case corpus + runner in
+`bench/`.
+
 ## Shipped (v0.9.3)
 
 ### Fidelity catches methodological overclaims, not just factual contradictions
