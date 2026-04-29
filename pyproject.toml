@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "aether-core"
-version = "0.12.0"
+version = "0.12.1"
 description = "Belief substrate for AI systems — persistent, contradiction-aware trust state that outlives any single model. The model is the mouth, the substrate is the self."
 readme = "README.md"
 license = {text = "MIT"}
@@ -30,7 +30,10 @@ dependencies = [
 [project.optional-dependencies]
 graph = ["networkx>=3.0"]
 ml = ["sentence-transformers>=2.2"]
-mcp = ["mcp>=1.0"]
+# `mcp` includes networkx because StateStore builds a MemoryGraph
+# unconditionally — installing just `[mcp]` would otherwise yield an
+# unusable server (ImportError on first tool call).
+mcp = ["mcp>=1.0", "networkx>=3.0"]
 all = ["networkx>=3.0", "sentence-transformers>=2.2", "mcp>=1.0"]
 dev = ["pytest>=7.0", "pytest-cov>=4.0"]
 
@@ -49,3 +52,6 @@ include = ["aether*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+markers = [
+    "e2e: end-to-end tests that build a fresh venv and exercise the MCP wire (slow, ~30-60s for the venv build)",
+]

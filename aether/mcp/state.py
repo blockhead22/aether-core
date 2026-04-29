@@ -97,6 +97,18 @@ AUTO_LINK_THRESHOLD_SUBSTRING = float(
     os.environ.get("AETHER_AUTO_LINK_THRESHOLD_SUBSTRING", "0.4")
 )
 
+
+def _link_threshold(mode: str) -> float:
+    """Adaptive auto-link threshold by similarity mode.
+
+    Both `add_memory` (write-time) and `backfill_edges` (retroactive)
+    pick the same threshold based on whether the similarity score
+    came from embedding cosine or Jaccard token-overlap. The two
+    sites used to duplicate this decision; this helper pins the
+    formula in one place.
+    """
+    return AUTO_LINK_THRESHOLD if mode == "embedding" else AUTO_LINK_THRESHOLD_SUBSTRING
+
 # Policy contradiction detection (for sanction-time gating).
 # StructuralTensionMeter is fact-vs-fact and misses command-vs-prohibition,
 # so we add a lightweight imperative/prohibition cross-check.
@@ -688,9 +700,7 @@ class StateStore:
                 # `sim` is Jaccard token-overlap (typically 0.0-0.5) and
                 # the meter populates embedding_similarity=0.0 (not None,
                 # so `is not None` checks don't distinguish modes). Use
-                # the encoder's is_loaded state to pick the threshold:
-                # AUTO_LINK_THRESHOLD (0.7) for embeddings, otherwise
-                # AUTO_LINK_THRESHOLD_SUBSTRING (0.4 default).
+                # the encoder's is_loaded state to pick the right mode.
                 encoder_ready = (
                     self._encoder is not None and self._encoder.is_loaded
                 )
@@ -698,12 +708,11 @@ class StateStore:
                     link_sim = result.supporting_signals.get(
                         "embedding_similarity", sim,
                     )
-                    threshold = AUTO_LINK_THRESHOLD
                     mode = "embedding"
                 else:
                     link_sim = sim  # Jaccard token overlap fallback
-                    threshold = AUTO_LINK_THRESHOLD_SUBSTRING
                     mode = "substring"
+                threshold = _link_threshold(mode)
                 if link_sim >= threshold:
                     metadata = {
                         "similarity": float(round(link_sim, 4)),
@@ -935,13 +944,11 @@ class StateStore:
                     tb = set(b.text.lower().split())
                     sim = len(ta & tb) / max(len(ta | tb), 1)
                     mode = "substring"
-                # v0.9.5: per-pair adaptive threshold when no explicit override
-                if explicit_threshold is not None:
-                    threshold = explicit_threshold
-                elif mode == "embedding":
-                    threshold = AUTO_LINK_THRESHOLD
-                else:
-                    threshold = AUTO_LINK_THRESHOLD_SUBSTRING
+                threshold = (
+                    explicit_threshold
+                    if explicit_threshold is not None
+                    else _link_threshold(mode)
+                )
                 if sim < threshold:
                     skipped_low_sim += 1
                     continue

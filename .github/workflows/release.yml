@@ -1,12 +1,18 @@
 name: Release
 
-# Triggered when a GitHub release is published.
-# Builds wheel + sdist and publishes to PyPI via Trusted Publishers (OIDC).
-# No tokens or secrets needed; the trust is registered on PyPI's side.
+# Triggered when a `v*` tag is pushed. Builds wheel + sdist and
+# publishes to PyPI via Trusted Publishers (OIDC). No tokens or
+# secrets needed; the trust is registered on PyPI's side.
+#
+# Tag push is the source of truth here — release-cuts go `git tag vX.Y.Z
+# && git push --tags`, no GitHub Release UI step required.
+# `workflow_dispatch` is left enabled for manual recovery (re-run a
+# failed publish without retagging).
 
 on:
-  release:
-    types: [published]
+  push:
+    tags: ['v*']
+  workflow_dispatch:
 
 jobs:
   release:

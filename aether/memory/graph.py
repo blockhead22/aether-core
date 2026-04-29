@@ -361,7 +361,15 @@ class MemoryGraph:
         if not path:
             raise ValueError("No persist path specified")
 
+        # Stamp the writing aether version into the file so future
+        # loads can detect old state and apply migrations.
+        try:
+            from aether import __version__ as _aether_version
+        except ImportError:
+            _aether_version = "unknown"
+
         data = {
+            "aether_version": _aether_version,
             "nodes": [],
             "edges": [],
         }
