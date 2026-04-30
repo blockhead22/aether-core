@@ -345,36 +345,20 @@ def test_correct_cascades_through_supports_chain(
     run_async(run())
 
 
-def test_lineage_returns_ancestors_for_linked_memory(
-    aether_venv, aether_state_path
-):
-    """Turn 8: `aether_lineage` returns a non-empty ancestors structure
-    for a memory connected to others in the BDG.
+def test_lineage_walks_supports_chain(aether_venv, aether_state_path):
+    """Turn 8: `aether_lineage` walks SUPPORTS edges back to source.
 
-    Originally this test asserted depth-2 traversal through an explicit
-    SUPPORTS chain (C -> B -> A) wired via aether_link. That surfaced
-    two findings worth capturing rather than coercing the test:
+    Setup: build a 3-node SUPPORTS chain A -> B -> C via aether_link.
+    Lineage from C must reach A through B.
 
-    F#5: aether_link with `edge_type='supports'` does not appear to
-        replace an existing auto-link `related_to` edge between the
-        same nodes. DiGraph semantics in networkx merge attrs on
-        `add_edge`, so the new `edge_type` should win — but the
-        observed `aether_lineage` response carried `edge_type='related_to'`
-        on the C->B edge after an explicit aether_link supports call.
-        Either add_link is being shadowed by an earlier auto-link, or
-        the merge isn't landing. Needs a targeted unit test.
-
-    F#6: With auto-link similarity thresholds (0.7 embedding / 0.4
-        Jaccard), the three TypeScript facts in this scenario only
-        connect on the C<->B side; A doesn't auto-link to B because
-        Jaccard between "released in 2023" and "supports decorators"
-        falls below 0.4. So the lineage walk stops at depth 1 even
-        with hops=3.
-
-    For now this test pins what we can confidently assert: lineage
-    returns a structured response with ancestors when the substrate
-    has linked the memories, and doesn't crash. The depth/edge-type
-    contract gets its own unit test once F#5/F#6 are diagnosed.
+    Note on edge direction: aether_lineage walks `in_edges(current)`,
+    i.e. edges pointing INTO the queried node. The semantic mapping
+    "X supports Y" -> "Y depends on X for support" -> edge X -> Y
+    (so Y has an in_edge from X). Earlier draft of this test had
+    the direction reversed (used src=child, tgt=parent), which made
+    it look like aether_link wasn't honoring edge_type — it actually
+    was; the test just walked a one-link chain because the upstream
+    A->B edge was never wired. Fixed now and pinned with this docstring.
     """
 
     async def run():
@@ -393,6 +377,16 @@ def test_lineage_returns_ancestors_for_linked_memory(
                 )
                 ids.append(r["memory_id"])
 
+            # Wire SUPPORTS chain. Edge "X SUPPORTS Y" -> source=X,
+            # target=Y -> Y has in_edge from X -> lineage(Y) walks to X.
+            #   A SUPPORTS B  (A is the more-general fact, B cites A)
+            #   B SUPPORTS C  (B grounds the project-specific claim C)
+            for src, tgt in ((ids[0], ids[1]), (ids[1], ids[2])):
+                await session.call_tool(
+                    "aether_link",
+                    {"source_id": src, "target_id": tgt, "edge_type": "supports"},
+                )
+
             lineage_result = await session.call_tool(
                 "aether_lineage",
                 {"memory_id": ids[2], "hops": 3},
@@ -403,9 +397,26 @@ def test_lineage_returns_ancestors_for_linked_memory(
                 f"lineage didn't echo the queried memory_id: {payload}"
             )
             ancestors = payload.get("ancestors", [])
-            assert isinstance(ancestors, list) and len(ancestors) >= 1, (
-                f"expected at least 1 ancestor for the queried memory, "
-                f"got {payload}"
+            assert ancestors, (
+                f"expected ancestors for the linked memory, got {payload}"
+            )
+
+            # Walk should reach root A (depth 2) through B (depth 1).
+            ancestor_ids = {a["memory_id"] for a in ancestors}
+            assert ids[1] in ancestor_ids, (
+                f"depth-1 ancestor {ids[1]!r} (B) missing. ancestors={ancestors}"
+            )
+            assert ids[0] in ancestor_ids, (
+                f"depth-2 ancestor {ids[0]!r} (A) missing — lineage didn't "
+                f"traverse the full SUPPORTS chain. ancestors={ancestors}"
+            )
+
+            # The B->C edge should report as supports (overrides any
+            # auto-link that fired on similarity).
+            b_to_c = next((a for a in ancestors if a["memory_id"] == ids[1]), None)
+            assert b_to_c is not None
+            assert b_to_c.get("edge_type") == "supports", (
+                f"expected edge_type=supports on B->C, got {b_to_c.get('edge_type')!r}"
             )
 
     run_async(run())
