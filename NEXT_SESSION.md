@@ -1,83 +1,109 @@
-# Aether — next session handoff (after 2026-04-29 evening)
+# Aether — next session handoff (after 2026-04-30 evening)
 
 ## Where we are
 
-`aether-core` is at **v0.12.1** on origin master, commit `64d5595`, tag `v0.12.1` pushed and **published live on PyPI as the latest version** (`pip install aether-core` resolves to 0.12.1; first PyPI publish since 0.9.0). **328 tests pass** plus **8 e2e tests** (7 passing, 1 xfail capturing a real finding).
+`aether-core` is at **v0.12.5** on origin master, commit `ad27f1b`, **published live on PyPI as the latest version**. **361+ tests pass**, zero xfail, CI green on master.
 
-Today's session was the e2e harness pivot from the prior handoff. Goal was: scaffold the harness, verify install path, get 2 turns working, capture findings. We ended up shipping considerably more than that.
+Today (2026-04-30) shipped **five PyPI releases** in one day, each fixing or hardening a real finding the substrate-assisted dev loop surfaced:
 
-### v0.12.1 — what just shipped
+| Version | What | Findings closed |
+|---|---|---|
+| 0.12.1 | E2E harness scaffold + v0.9.6 carry-overs (link helper, version stamp, [mcp] networkx, release.yml trigger) | F#1, F#2 |
+| 0.12.2 | Extended policy contradiction detection — IMPERATIVE_CUES covers real CLI forms; strong-trust override bypasses sim gate when belief trust ≥ 0.85 | F#4 |
+| 0.12.3 | F#7 fix — StateStore syncs from disk on external writes; auto-ingest hook writes survive server saves | F#7 |
+| 0.12.4 | `aether doctor` diagnostic command — six checks (imports, state file, activity, encoder, hook, mcp registration) that surface silent breakage in seconds | (catches future F#1-style bugs) |
+| 0.12.5 | F#3 fix — `MemoryGraph.get_memory()` catches deserialization errors; read tools degrade to "unknown memory_id" instead of crashing on corrupt nodes | F#3 |
 
-E2E harness scaffold (new `tests/e2e/`):
-- `conftest.py` — session-scoped fresh-venv fixture, per-test state-path isolation, async `mcp_session` helper using the `mcp` SDK's `stdio_client`. No pytest-asyncio dependency.
-- `test_install_smoke.py` — 4 tests: import works, version is right, server builds, console scripts land. Includes regression pin for `[mcp]`-only installs.
-- `test_full_loop.py` — turns 1-5 of the scripted scenario over real MCP stdio (4 passing, 1 xfail).
+E2E harness expanded from turns 1-2 → turns 1-10 (full scripted scenario). 9 full_loop tests + 4 smoke tests, all passing.
 
-Carry-overs from the v0.9.6 cleanup list (pre-existing on disk this session, all committed in v0.12.1):
-- `[mcp]` extra now declares `networkx` (F#1 fix — was the first finding the harness caught).
-- `release.yml` triggers on `push: tags: ['v*']` instead of `release: published` (F#2 fix — caught when checking PyPI publish status; tags v0.10.0 → v0.12.0 had been pushed but no GitHub Releases were ever created so OIDC publish never ran).
-- `aether/mcp/state.py`: `_link_threshold(mode)` helper unifies the auto-link similarity decision used by both `add_memory` and `backfill_edges` (B3).
-- `aether/memory/graph.py`: `save()` stamps `aether_version` into the state file so future loads can detect old state and apply migrations (B4).
+The auto-ingest Stop hook was fixed to actually read `transcript_path` (had been a silent no-op for 3 days because Claude Code sends a path, not inline messages). Hook now fires every turn and writes high-trust facts to the substrate. The substrate grew from 38 → 41+ memories during the session as a direct consequence.
 
-Substrate cleanup (per-user runtime data, not in git): pre-v0.10.1 metadata-collision zombie node `id=backfill` + 2 RELATED_TO edges hard-deleted from `~/.aether/mcp_state.json` after `aether_sanction` APPROVE (action_id `ccf7e316`). Audit memory `m1777477400408_v096cleanup` written. Backup at `~/.aether/mcp_state.pre_v096_cleanup_1777477345.json`.
+### Findings status (all 7 closed)
+
+| ID | Description | Disposition |
+|---|---|---|
+| F#1 | `[mcp]` install missing networkx → server crash on first tool call | Fixed v0.12.1 |
+| F#2 | release.yml triggered on `release: published` not tag push → no PyPI publishes since 0.9.0 | Fixed v0.12.1 |
+| F#3 | Read tools crash with TypeError on corrupt nodes (zombie `backfill`-shape) | Fixed v0.12.5 |
+| F#4 | `aether_sanction` approves `git push --force` against "Never force-push" belief | Fixed v0.12.2 |
+| F#5 | `aether_link("supports")` doesn't override existing `related_to` | Closed — test-author error in turn-8 e2e, not a bug |
+| F#6 | Auto-link sim threshold leaves dissimilar facts disconnected | Closed — expected behavior, threshold is tunable |
+| F#7 | Stop hook + MCP server share state file with no coordination → server clobbers hook writes | Fixed v0.12.3 |
+
+## Strategic state
+
+The substrate is now **structurally complete** for in-session use:
+- Auto-ingest fires after every turn → substrate grows on its own.
+- `_sync_first` decorator ensures the server picks up external writes on the next tool call.
+- `aether doctor` diagnoses install / hook / MCP / state-file issues in seconds.
+- All read tools degrade gracefully on corrupt nodes.
+- All write tools sync from disk before mutating, so hook writes survive.
+
+The remaining gap is **richness, not architecture**. With 41 memories the substrate can't ground much; the value compounds at 1000+. The fix for that is just time + sessions — which the auto-ingest hook now does for free as long as you're working.
+
+OSS remains the main focus. Today's marathon proves the substrate-assisted dev loop is real: every shipped release was validated by Aether's own tools (sanction APPROVE for cleanup, search for prior context, fidelity for grounding, doctor for health). The README's "I built a substrate that caught itself shipping bugs" thesis got 5 fresh data points today.
 
 ## What we're working on next
 
-**Continue the e2e harness — turns 6-10.** Remaining test bodies, each its own test in `test_full_loop.py` so failures localize:
+Three plausible threads, in priority order:
 
-  6. `aether_fidelity` on a draft — grade a written response against the substrate, expect non-zero score and methodological_concerns when the draft makes an unsupported inference.
-  7. `aether_correct` cascade — drop trust on a memory, assert the correction propagates through SUPPORTS edges to dependents (cascade complexity paper's headline behavior).
-  8. `aether_lineage` walks the BDG — seed a SUPPORTS chain via `aether_link`, assert lineage returns the ancestors.
-  9. `aether_path` returns weighted route — Dijkstra retrieval over the BDG. **High regression value** because v0.10.1 had a 12-hour silent-crash bug here.
- 10. `aether_session_diff` briefs returning agent — write some memories, call session_diff with a past timestamp, assert the new memories appear.
+### 1. README rewrite + onboarding (highest external leverage)
 
-After turns 6-10:
-- `tests/e2e/test_cold_warm_modes.py` — same scenario in cold mode (no embeddings) and warm mode (sentence-transformers loaded). Pins the v0.9.5 cold-encoder fix.
-- `tests/e2e/test_plugin_install.py` — Claude Code plugin install path if feasible. Likely surfaces the most onboarding findings.
+The handoff has called for this for two sessions. With the architecture now stable and all findings closed, this is the bottleneck for adoption. Today's work proves the value-prop concretely; the README still reads like a feature list, not a "what this changes about your assistant" pitch.
 
-## Open findings (caught by the harness)
+Concrete deliverables:
+- Top section: 3 sentences explaining why this exists. "The model is the mouth, the substrate is the self." cite something concrete from today (e.g. "F#7 was caught by the substrate auditing the substrate's own writes").
+- Quickstart: `pip install aether-core[mcp,graph,ml]` → claude plugin install → `aether doctor` → first remember → first sanction.
+- "What this catches that other tools don't": cross-session belief continuity, contradiction-as-signal, governance gate. Avoid "memory MCP" framing.
+- Drop or move: long lists of tools, internal architecture sections. Move to docs/.
 
-- **F#3 (open):** `aether_memory_detail`, `aether_lineage`, `aether_cascade_preview` all crash with `TypeError: MemoryNode.__init__() missing 3 required positional arguments` when fed a corrupt node id. Should return a graceful "node not found / not deserializable" response. One-line type guard in each tool plus a deserialization-failure unit test.
-- **F#4 (xfail in `test_sanction_non_approves_action_contradicting_substrate`):** `aether_sanction` approves an action that contradicts a high-trust prohibition belief, because `IMPERATIVE_CUES` requires substrings like `force push` or `push to main` — natural CLI form `git push --force` matches none of them. Plus cold-encoder Jaccard similarity falls below the 0.45 sim gate. Fix candidates: extend `IMPERATIVE_CUES` to cover real CLI forms (`--force`, `-f origin`, etc.); add a cue-only fallback when sim is below threshold but trust is above `POLICY_CONTRA_MIN_TRUST`; or lower the sim gate when cues fire on both sides. xfail flips green automatically when fixed.
-- **Slot extractor name gap (open, observed during turn 3-4 work):** `extract_fact_slots` returns empty for `My name is X`, `I am X`, `Nick lives in X`. Production `user.name` contradictions must come from a higher CRT layer setting slots explicitly. If the OSS extractor should handle names natively, that's separate ~30-min work.
+### 2. Validation chapter
 
-## Parking lot (unchanged from prior handoff unless noted)
+Per prior handoffs: 4 tests — N>1 user, cross-vendor, fresh-session-no-context, scale (1k/10k memories). The substrate is now stable enough to start collecting external evidence rather than dogfood-only.
 
-- **Backport audit to main repo.** Main almost certainly has the same slot-equality + local-context blind spots OSS just fixed. ~2-3 hours mechanical port.
-- **Dijkstra `aether_path` v2** — the RCT-map idea. Cost-weighted shortest-path retrieval over BDG. <100 lines. Lab A v2's 42 production node pairs are the input set.
-- **Blog post:** *"I built a substrate that caught itself shipping bugs"* — 38-hour story; v0.12.1 makes a stronger close (substrate audit found bugs in the audit tools themselves).
+### 3. Slot extractor name patterns
+
+Production CRT layers have `user.name` slots; OSS extractor returns empty for "My name is Nick" / "I am Nick" patterns. Adding a name pattern bank (~30 lines) closes the gap and lets the slot-equality detector catch the canonical Nick<>Aether case the v0.12 audit cited.
+
+## Other parking-lot items
+
+- **Backport audit to main repo** (`D:/AI_round2/personal_agent/`). Probably has the same slot-equality + local-context blind spots OSS just fixed. ~2-3 hours mechanical port.
 - **Cascade complexity paper to arxiv** (drafted in `papers/cascade_complexity/`).
-- **Validation chapter (4 tests):** N>1 user, cross-vendor, fresh-session-no-context (clean), scale (1k/10k memories).
+- **Blog post:** *"I built a substrate that caught itself shipping bugs"* — today's 5-release marathon is the new climax (was 38-hour story).
 - **Production aether bug:** `crt_search_sessions` returns 0 sessions for common topics despite 79k memories indexed. Session indexer out of sync. Not OSS-blocking.
-- **Older PyPI tags:** v0.10.0, v0.10.1, v0.11.0, v0.12.0 are pushed as git tags but were never published to PyPI (the old `release: published` trigger required a GitHub Release UI step that never happened). v0.12.1 leapfrogs them on PyPI. If you want to backfill, create GitHub Releases retroactively or `gh workflow run release.yml --ref vX.Y.Z` per tag — but probably not worth it; the publish pipeline is fixed going forward.
+- **F#7 deeper architecture:** the disk-sync fix is correct but pessimistic — every tool call does an `os.stat`. Long-term, having the hook talk to the running MCP server via stdio would be cleaner (no file polling). Not urgent; current fix is solid.
 
 ## Useful commands
 
 ```powershell
 cd D:/AI_round2/aether-core
 
-# Tests (323 unit + 8 e2e = 331)
+# Tests (348 unit + 13 e2e = 361)
 python -m pytest tests/ -q                         # everything (~3 min, e2e builds a venv)
-python -m pytest tests/ --ignore=tests/e2e -q      # just unit (~30s)
+python -m pytest tests/ --ignore=tests/e2e -q      # just unit (~25s)
 python -m pytest tests/e2e/ -v                     # just e2e (~2 min)
+
+# Diagnostic
+aether doctor                                      # check install/hook/mcp/state health
+aether doctor --format json                        # for scripts
 
 # Calibration bench
 python bench/run_fidelity_bench.py            # warm 29/29
 python bench/run_fidelity_bench.py --cold     # cold 21/29
 
-# Verify v0.12.1 publish
-pip install --upgrade aether-core
-python -c "import aether; print(aether.__version__)"
-
 # Substrate state
 aether status
+
+# Verify latest publish
+pip install --upgrade aether-core
+python -c "import aether; print(aether.__version__)"   # should print 0.12.5
 ```
 
 ## First moves for next session
 
-1. **Pick a turn from 6-10 and write its test.** Lowest-friction continuation. Turn 9 (`aether_path`) is the highest-value test because of its prior production bug history.
-2. **Or address F#4 first.** It's a real governance bug the harness caught; fix is bounded (extend `IMPERATIVE_CUES`, possibly relax sim gate). xfail will auto-flip when shipped. Could be combined with a v0.12.2 patch.
-3. **Or pivot to `aether doctor`.** With the harness at 5/10 it's already proven valuable; the diagnostic command is a natural follow-up that leverages everything the harness exposed (which extras matter, what state-path env vars exist, etc.).
+1. **Run `aether doctor`** to confirm everything is wired correctly. If anything is FAIL or WARN, address before continuing.
+2. **Pick one of the three threads above.** README rewrite is the highest external leverage.
+3. **Check `aether_search`** for memories the auto-ingest captured since last connect. The substrate should be richer than it was — that's a material data point for the README pitch.
 
 ## What stays closed
 
@@ -88,4 +114,4 @@ aether status
 
 ---
 
-*This doc replaces the v0.12.0 handoff. Strategic context (OSS-as-main-focus) unchanged. Today's session published v0.12.1 to PyPI, scaffolded the e2e harness through turn 5, and surfaced 4 findings via the harness (2 fixed in the same release, 2 open). Three concerns from the prior handoff — e2e gap, install ergonomics, onboarding — are now: e2e gap **partly closed**, install ergonomics **first cut shipped**, onboarding **not yet started**.*
+*This doc replaces the v0.12.0 / v0.12.1 handoffs. Strategic context (OSS-as-main-focus) unchanged. Today shipped five PyPI releases, closed all seven open findings, fixed the auto-ingest hook (3-day silent bug), and added a diagnostic command (`aether doctor`) that prevents the same class of silent bug from happening again. The substrate is now structurally complete; growth and onboarding are the remaining work.*
