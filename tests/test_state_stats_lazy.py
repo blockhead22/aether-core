@@ -57,7 +57,9 @@ def test_stats_does_not_block(tmp_path):
     elapsed = _time.monotonic() - t0
 
     # stats() must be effectively instantaneous regardless of whether
-    # encoder warmup is mid-flight or already done.
+    # encoder warmup is mid-flight or already done. This is the actual
+    # regression check — it must hold whether or not sentence-transformers
+    # is installed.
     assert elapsed < 0.5, (
         f"stats() took {elapsed:.2f}s; v0.8.0 bug regression — "
         "stats() should never block on encoder loading"
@@ -65,7 +67,11 @@ def test_stats_does_not_block(tmp_path):
     assert "embeddings_available" in result
     assert "embeddings_loaded" in result
     assert "embeddings_warming" in result
-    assert result["embeddings_available"] is True
+    # `embeddings_available` reports whether the encoder is wired up
+    # AND not flagged unavailable. With [ml] installed it should be
+    # True; without [ml] the lazy encoder marks itself unavailable
+    # on first import attempt, which is correct cold-mode behavior.
+    assert result["embeddings_available"] is _HAS_SENTENCE_TRANSFORMERS
 
 
 @needs_networkx
