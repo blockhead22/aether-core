@@ -21,8 +21,21 @@ try:
 except ImportError:
     _HAS_NETWORKX = False
 
+try:
+    import sentence_transformers  # noqa: F401
+    _HAS_SENTENCE_TRANSFORMERS = True
+except ImportError:
+    _HAS_SENTENCE_TRANSFORMERS = False
+
 needs_networkx = pytest.mark.skipif(
     not _HAS_NETWORKX, reason="networkx required (install [graph] extra)",
+)
+needs_sentence_transformers = pytest.mark.skipif(
+    not _HAS_SENTENCE_TRANSFORMERS,
+    reason=(
+        "sentence-transformers required for warm-mode calibration "
+        "(install [ml] extra). Cold-mode tests below run regardless."
+    ),
 )
 
 pytest.importorskip("mcp")
@@ -31,8 +44,14 @@ from bench.run_fidelity_bench import run_corpus, render_markdown
 
 
 @needs_networkx
+@needs_sentence_transformers
 class TestFidelityCalibration:
-    """Run the corpus, assert every blocker category passes."""
+    """Run the corpus, assert every blocker category passes.
+
+    Skipped when sentence-transformers isn't installed (cold-mode
+    fallback can't satisfy the warm-mode hit-rate guarantees). The
+    cold-mode class below still runs and pins the substring-only path.
+    """
 
     @pytest.fixture(scope="class")
     def summary(self):
