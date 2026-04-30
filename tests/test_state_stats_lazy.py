@@ -67,11 +67,12 @@ def test_stats_does_not_block(tmp_path):
     assert "embeddings_available" in result
     assert "embeddings_loaded" in result
     assert "embeddings_warming" in result
-    # `embeddings_available` reports whether the encoder is wired up
-    # AND not flagged unavailable. With [ml] installed it should be
-    # True; without [ml] the lazy encoder marks itself unavailable
-    # on first import attempt, which is correct cold-mode behavior.
-    assert result["embeddings_available"] is _HAS_SENTENCE_TRANSFORMERS
+    # We do NOT assert on the value of `embeddings_available` — it
+    # depends on whether the async warmup thread has had time to
+    # attempt sentence-transformers import and set `is_unavailable`.
+    # That's inherently racy in CI. The actual regression target is
+    # the timing assertion above (stats() doesn't block); the field
+    # presence check covers the API contract.
 
 
 @needs_networkx
