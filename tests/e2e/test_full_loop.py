@@ -143,27 +143,19 @@ def test_contradiction_listable_via_contradictions_tool(
     run_async(run())
 
 
-@pytest.mark.xfail(
-    reason=(
-        "F#4 captured by e2e harness: aether_sanction approves an action "
-        "(`git push --force origin main`) that contradicts a high-trust "
-        "prohibition belief (`Never force-push to the main branch.`). "
-        "Two gaps in aether/mcp/state.py: (1) IMPERATIVE_CUES requires "
-        "exact substring `force push` or `push to main` — natural CLI "
-        "form `git push --force` matches neither; (2) cold-encoder mode "
-        "uses Jaccard which falls below POLICY_CONTRA_MIN_SIMILARITY "
-        "(0.45) on this pair. Fix candidates: add `--force`, `-f origin`, "
-        "etc. to IMPERATIVE_CUES; or lower the sim gate when cues fire "
-        "on both sides; or run a cue-only fallback when sim is below "
-        "threshold but trust is above POLICY_CONTRA_MIN_TRUST."
-    ),
-    strict=True,
-)
 def test_sanction_non_approves_action_contradicting_substrate(
     aether_venv, aether_state_path
 ):
     """Turn 5: `aether_sanction` must return HOLD or REJECT for an
     action that contradicts a high-trust prohibition belief.
+
+    Originally xfail (F#4 finding): the harness caught that
+    aether_sanction APPROVE'd `git push --force origin main` against a
+    `Never force-push to the main branch.` belief. Two gaps:
+    IMPERATIVE_CUES missed real CLI forms (`--force`, `-f origin`), and
+    cold-encoder Jaccard sim fell below the 0.45 gate. v0.12.2 extended
+    the cue list and added a strong-trust override (POLICY_CONTRA_STRONG_TRUST)
+    that bypasses the sim gate when belief trust is >= 0.85. xfail flipped.
     """
 
     async def run():

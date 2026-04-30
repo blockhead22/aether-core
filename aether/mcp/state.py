@@ -123,9 +123,23 @@ IMPERATIVE_CUES = (
     "drop database", "drop table", "truncate", "deploy to prod",
     "push to main", "push to master", "merge to main",
     "skip tests", "disable tests", "--no-verify",
+    # v0.12.2: real CLI forms. The original list missed `--force`,
+    # `-f origin`, etc. which are how force-push actually shows up in
+    # commands. F#4 e2e finding: a high-trust "never force-push" belief
+    # didn't catch `git push --force origin main` because the cue match
+    # required substrings like "force push" (with space).
+    "--force", " -f ", "-f origin", "-f main", "-f master",
+    "push --force", "push -f",
 )
 POLICY_CONTRA_MIN_SIMILARITY = 0.45
 POLICY_CONTRA_MIN_TRUST = 0.7
+# v0.12.2: when belief trust is very high AND cues align on both sides,
+# the sim-gate is bypassed. The gate exists to suppress false positives
+# on co-topical memories; a high-trust prohibition with a clear
+# imperative match is strong enough on its own. Closes the cold-encoder
+# blind spot where Jaccard token overlap between a belief and a CLI
+# action falls below 0.45 even when the conflict is unambiguous.
+POLICY_CONTRA_STRONG_TRUST = 0.85
 
 
 # Methodological overclaim detection (v0.9.3, Layer 2).
@@ -198,6 +212,57 @@ def _looks_like_prohibition(text: str) -> bool:
 def _looks_like_imperative(text: str) -> bool:
     t = text.lower()
     return any(cue in t for cue in IMPERATIVE_CUES)
+
+
+def _is_policy_contradiction(
+    mem_text: str,
+    new_text: str,
+    sim: float,
+    mem_trust: float,
+) -> bool:
+    """Catches command-vs-prohibition contradictions.
+
+    The structural tension meter misses these because there are no
+    shared slots between an imperative and a policy statement, so we
+    add this lightweight cue cross-check on top.
+
+    Two ways to fire (both require trust >= POLICY_CONTRA_MIN_TRUST and
+    one side prohibits while the other commands):
+
+    1. Standard:  sim  >= POLICY_CONTRA_MIN_SIMILARITY (0.45)
+                  trust >= POLICY_CONTRA_MIN_TRUST (0.7)
+    2. Strong-trust: trust >= POLICY_CONTRA_STRONG_TRUST (0.85)
+                  --- sim gate bypassed ---
+
+    The strong-trust path closes F#4: cold-encoder Jaccard overlap
+    between a high-trust prohibition belief and a real CLI action falls
+    below 0.45, but the cue alignment is strong enough on its own when
+    the user has explicitly stored a high-trust policy.
+
+    The two call sites (write-time tension scan + read-time grounding)
+    used to inline this logic; pulling it into one helper means a future
+    threshold tweak hits both paths together.
+    """
+    if mem_trust < POLICY_CONTRA_MIN_TRUST:
+        return False
+
+    mem_prohibits = _looks_like_prohibition(mem_text)
+    mem_imperative = _looks_like_imperative(mem_text)
+    new_prohibits = _looks_like_prohibition(new_text)
+    new_imperative = _looks_like_imperative(new_text)
+
+    cues_align = (
+        (mem_prohibits and new_imperative and not new_prohibits)
+        or (mem_imperative and new_prohibits and not new_imperative)
+    )
+    if not cues_align:
+        return False
+
+    if sim >= POLICY_CONTRA_MIN_SIMILARITY:
+        return True
+    if mem_trust >= POLICY_CONTRA_STRONG_TRUST:
+        return True
+    return False
 
 
 # Generic negation cues for asymmetric-negation contradiction detection.
@@ -650,17 +715,11 @@ class StateStore:
             asymm_neg = _is_asymmetric_negation_contradict(
                 other.text, text, sim_for_check,
             )
-            policy = (
-                sim_for_check >= POLICY_CONTRA_MIN_SIMILARITY
-                and other.trust >= POLICY_CONTRA_MIN_TRUST
-                and (
-                    (_looks_like_prohibition(other.text)
-                     and _looks_like_imperative(text)
-                     and not _looks_like_prohibition(text))
-                    or (_looks_like_imperative(other.text)
-                        and _looks_like_prohibition(text)
-                        and not _looks_like_imperative(text))
-                )
+            policy = _is_policy_contradiction(
+                mem_text=other.text,
+                new_text=text,
+                sim=sim_for_check,
+                mem_trust=other.trust,
             )
             mutex_hit = detect_mutex_conflict(other.text, text)
 
@@ -1148,17 +1207,11 @@ class StateStore:
             # The tension meter misses this case because there are no
             # shared slots between an imperative and a policy statement.
             sim = tr.supporting_signals.get("embedding_similarity", 0.0)
-            mem_prohibits = _looks_like_prohibition(hit["text"])
-            mem_imperative = _looks_like_imperative(hit["text"])
-            new_imperative = _looks_like_imperative(text)
-            new_prohibits = _looks_like_prohibition(text)
-            high_overlap = (
-                sim >= POLICY_CONTRA_MIN_SIMILARITY
-                and hit["trust"] >= POLICY_CONTRA_MIN_TRUST
-            )
-            is_policy_contradict = high_overlap and (
-                (mem_prohibits and new_imperative and not new_prohibits)
-                or (mem_imperative and new_prohibits and not new_imperative)
+            is_policy_contradict = _is_policy_contradiction(
+                mem_text=hit["text"],
+                new_text=text,
+                sim=sim,
+                mem_trust=hit["trust"],
             )
 
             # Asymmetric-negation: "We use pnpm not npm" vs "We use npm"
