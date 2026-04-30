@@ -150,11 +150,29 @@ class MemoryGraph:
         return node.memory_id
 
     def get_memory(self, memory_id: str) -> Optional[MemoryNode]:
-        """Get a memory node by ID."""
+        """Get a memory node by ID. Returns None for missing or corrupt nodes.
+
+        F#3 defense: pre-v0.10.1 substrates can carry stub nodes with
+        missing required fields (e.g. the `backfill` zombie that the
+        metadata-collision bug created — id only, no memory_id / text /
+        created_at). MemoryNode.from_dict raises TypeError on those.
+        Catching here turns the crash into a clean "not found" — every
+        caller already handles None, and the alternative (propagating
+        TypeError up to MCP tool surfaces) is worse: aether_memory_detail,
+        aether_lineage, and aether_cascade_preview all crash with an
+        opaque init error rather than reporting "node corrupt."
+
+        `aether doctor` surfaces these corrupt nodes proactively in its
+        state_file check; this method ensures runtime never crashes
+        even if doctor wasn't run first.
+        """
         if memory_id not in self.graph:
             return None
         data = dict(self.graph.nodes[memory_id])
-        return MemoryNode.from_dict(data)
+        try:
+            return MemoryNode.from_dict(data)
+        except (TypeError, KeyError, ValueError):
+            return None
 
     def all_memories(self):
         """Iterate every MemoryNode in the graph.

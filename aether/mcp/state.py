@@ -1723,10 +1723,13 @@ class StateStore:
 
         # 3. Build budget-fitting path. Always include target.
         # Order ancestors by Dijkstra distance (closest to target first).
-        ordered = sorted(
-            distances.keys(),
-            key=lambda mid: (distances[mid], -self.graph.get_memory(mid).trust),
-        )
+        # F#3 guard: treat corrupt nodes as trust=0 in the sort so they
+        # don't AttributeError on `.trust` access. The downstream loop
+        # already skips them.
+        def _sort_key(mid):
+            node = self.graph.get_memory(mid)
+            return (distances[mid], -(node.trust if node is not None else 0.0))
+        ordered = sorted(distances.keys(), key=_sort_key)
         path: List[Dict[str, Any]] = []
         used_tokens = 0
         for mid in ordered:
