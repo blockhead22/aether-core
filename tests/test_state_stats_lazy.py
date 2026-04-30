@@ -16,9 +16,19 @@ try:
 except ImportError:
     _HAS_NETWORKX = False
 
+try:
+    import sentence_transformers  # noqa: F401
+    _HAS_SENTENCE_TRANSFORMERS = True
+except ImportError:
+    _HAS_SENTENCE_TRANSFORMERS = False
+
 needs_networkx = pytest.mark.skipif(
     not _HAS_NETWORKX,
     reason="networkx required (install [graph] extra)",
+)
+needs_sentence_transformers = pytest.mark.skipif(
+    not _HAS_SENTENCE_TRANSFORMERS,
+    reason="sentence-transformers required (install [ml] extra)",
 )
 
 from aether.mcp.state import StateStore, _LazyEncoder
@@ -59,11 +69,14 @@ def test_stats_does_not_block(tmp_path):
 
 
 @needs_networkx
+@needs_sentence_transformers
 def test_stats_reports_loaded_after_first_encode(tmp_path):
     """Once the encoder finishes loading, stats() reports it.
 
     Forces synchronous load to keep the test deterministic across
-    suite vs isolation runs.
+    suite vs isolation runs. Requires sentence-transformers — if [ml]
+    isn't installed, _load() is a no-op and `embeddings_loaded` stays
+    False.
     """
     store = StateStore(state_path=str(tmp_path / "s.json"))
     initial_loaded = store.stats()["embeddings_loaded"]

@@ -56,8 +56,22 @@ try:
 except ImportError:
     _HAS_NETWORKX = False
 
+try:
+    import sentence_transformers  # noqa: F401
+    _HAS_SENTENCE_TRANSFORMERS = True
+except ImportError:
+    _HAS_SENTENCE_TRANSFORMERS = False
+
 needs_networkx = pytest.mark.skipif(
     not _HAS_NETWORKX, reason="networkx required (install [graph] extra)",
+)
+needs_sentence_transformers = pytest.mark.skipif(
+    not _HAS_SENTENCE_TRANSFORMERS,
+    reason=(
+        "sentence-transformers required for methodological-concern "
+        "tests — substring/Jaccard fallback can't bring up the "
+        "memory and the channel doesn't fire (install [ml] extra)."
+    ),
 )
 
 pytest.importorskip("mcp")
@@ -287,6 +301,7 @@ class TestFidelityToolSurface:
 
 
 @needs_networkx
+@needs_sentence_transformers
 class TestSanctionToolSurface:
     def test_aether_sanction_includes_methodological_concerns_field(self, store):
         from aether.mcp.server import build_server
