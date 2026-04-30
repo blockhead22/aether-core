@@ -6,6 +6,7 @@ Subcommands:
     aether check            run fidelity on a commit message file (pre-commit hook)
     aether contradictions   list current contradictions
     aether backfill-edges   retroactively wire RELATED_TO edges (v0.9.1)
+    aether doctor           diagnose install / substrate / hook health (v0.12.4)
 
 Each subcommand is a thin wrapper over `aether.mcp.state.StateStore`.
 """
@@ -321,6 +322,281 @@ def cmd_backfill_edges(args) -> int:
 # main
 # ---------------------------------------------------------------------------
 
+# ---------------------------------------------------------------------------
+# doctor (v0.12.4)
+# ---------------------------------------------------------------------------
+#
+# Surfaces the kind of silent breakage we kept hitting in v0.9-v0.12:
+# F#1 (mcp extra missing networkx, install crashed at first tool call),
+# F#3 (corrupt nodes crash read tools), F#7 (auto-ingest hook firing but
+# server clobbering its writes). Each check runs in seconds and either
+# returns OK or points at a concrete fix. `aether doctor` is the first
+# thing to run when "nothing seems to be working."
+
+# Status sigils — kept ASCII so `aether doctor` looks right in any terminal.
+_OK = "[ OK ]"
+_WARN = "[WARN]"
+_FAIL = "[FAIL]"
+
+
+def _doctor_install_imports() -> dict:
+    """Verify core + optional imports the tools depend on."""
+    issues = []
+    for pkg, extra in (
+        ("aether", None),
+        ("networkx", "graph"),
+        ("mcp", "mcp"),
+    ):
+        try:
+            __import__(pkg)
+        except ImportError as e:
+            extra_hint = f" (install with `pip install aether-core[{extra}]`)" if extra else ""
+            issues.append(f"{pkg} import failed: {e}{extra_hint}")
+
+    # sentence-transformers is optional — warn, don't fail.
+    warns = []
+    try:
+        __import__("sentence_transformers")
+    except ImportError:
+        warns.append(
+            "sentence_transformers not installed; substrate runs in cold "
+            "mode (Jaccard fallback). Install with `pip install aether-core[ml]` "
+            "for full warm-mode grounding."
+        )
+
+    if issues:
+        return {"status": "fail", "name": "install_imports", "messages": issues}
+    if warns:
+        return {"status": "warn", "name": "install_imports", "messages": warns}
+    return {"status": "ok", "name": "install_imports",
+            "messages": ["all required + optional packages importable"]}
+
+
+def _doctor_state_file(state_path: Optional[str]) -> dict:
+    """Confirm the substrate file is readable, parseable, and not corrupt."""
+    from aether.mcp.state import _default_state_path
+    path = Path(state_path or _default_state_path())
+    if not path.exists():
+        return {
+            "status": "warn",
+            "name": "state_file",
+            "messages": [
+                f"state file does not exist yet: {path}",
+                "this is fine on a fresh install — first write will create it.",
+            ],
+        }
+    try:
+        size = path.stat().st_size
+    except OSError as e:
+        return {"status": "fail", "name": "state_file",
+                "messages": [f"state file unreadable ({path}): {e}"]}
+    if size == 0:
+        return {"status": "warn", "name": "state_file",
+                "messages": [f"state file is empty: {path}"]}
+
+    try:
+        with path.open("r") as f:
+            data = json.load(f)
+    except (json.JSONDecodeError, OSError) as e:
+        return {
+            "status": "fail",
+            "name": "state_file",
+            "messages": [
+                f"state file is corrupt ({path}): {e}",
+                "consider restoring from a backup in the same directory "
+                "(e.g. mcp_state.pre_v096_cleanup_*.json).",
+            ],
+        }
+
+    # F#3 echo: scan nodes for the corrupt-deserialization shape.
+    corrupt_ids = []
+    for node in data.get("nodes", []):
+        if not all(k in node for k in ("id", "memory_id", "text", "created_at")):
+            corrupt_ids.append(node.get("id") or "<missing-id>")
+
+    msgs = [
+        f"state file: {path}",
+        f"size: {size:,} bytes",
+        f"nodes: {len(data.get('nodes', []))}",
+        f"edges: {len(data.get('edges', []))}",
+        f"aether_version on disk: {data.get('aether_version', '<pre-v0.12.1, unstamped>')}",
+    ]
+    if corrupt_ids:
+        msgs.append(
+            f"!!! {len(corrupt_ids)} corrupt node(s) detected: "
+            f"{corrupt_ids[:5]}{'...' if len(corrupt_ids) > 5 else ''}. "
+            "These will crash aether_memory_detail / aether_lineage / "
+            "aether_cascade_preview when accessed (F#3). Repair via a "
+            "manual JSON edit + server restart."
+        )
+        return {"status": "fail", "name": "state_file", "messages": msgs}
+    return {"status": "ok", "name": "state_file", "messages": msgs}
+
+
+def _doctor_substrate_activity(state_path: Optional[str]) -> dict:
+    """Has the auto-ingest hook (or anything else) been writing recently?
+
+    A long-stale substrate in the presence of active sessions implies
+    the Stop hook isn't firing. Surfaced this exact silent failure
+    today (the 3-day no-op transcript_path bug).
+    """
+    import time
+    from aether.mcp.state import _default_state_path
+    path = Path(state_path or _default_state_path())
+    if not path.exists():
+        return {"status": "warn", "name": "substrate_activity",
+                "messages": ["no state file yet — nothing to measure"]}
+    try:
+        mtime = path.stat().st_mtime
+    except OSError as e:
+        return {"status": "warn", "name": "substrate_activity",
+                "messages": [f"could not stat state file: {e}"]}
+    age_s = time.time() - mtime
+    age_h = age_s / 3600
+    msg = f"last substrate write: {age_h:.1f} hours ago"
+    if age_h > 24 * 7:
+        return {"status": "warn", "name": "substrate_activity",
+                "messages": [msg + " (>7 days). Auto-ingest hook may be silently no-oping."]}
+    return {"status": "ok", "name": "substrate_activity", "messages": [msg]}
+
+
+def _doctor_encoder() -> dict:
+    """Probe the lazy encoder synchronously and report its state."""
+    try:
+        from aether._lazy_encoder import LazyEncoder
+    except ImportError as e:
+        return {"status": "fail", "name": "encoder",
+                "messages": [f"encoder module unavailable: {e}"]}
+
+    enc = LazyEncoder()
+    # _load() is synchronous — tolerable in a CLI diagnostic.
+    enc._load()
+    if enc.is_unavailable:
+        return {
+            "status": "warn",
+            "name": "encoder",
+            "messages": [
+                "sentence-transformers cannot load (install via "
+                "`pip install aether-core[ml]`). Substrate falls back "
+                "to Jaccard token overlap; warm-mode grounding "
+                "thresholds won't be reached.",
+            ],
+        }
+    if enc.is_loaded:
+        return {"status": "ok", "name": "encoder",
+                "messages": [f"encoder loaded: {enc.model_name}"]}
+    return {"status": "warn", "name": "encoder",
+            "messages": ["encoder neither loaded nor flagged unavailable — odd state"]}
+
+
+def _doctor_claude_code_hook() -> dict:
+    """Look for a Stop hook pointing at an aether ingest script.
+
+    Claude Code searches a few config locations; we walk up from cwd
+    looking for `.claude/settings.json[.local]` (project-level), then
+    fall back to `~/.claude/settings.json` (user-global). Walking up
+    matters because users run `aether doctor` from anywhere in the
+    project tree, not necessarily the root that owns the .claude dir.
+
+    Best-effort: finding no hook isn't fatal (the user might use a
+    different client) but is worth surfacing because we hit the silent
+    no-op transcript_path bug for 3 days before noticing.
+    """
+    candidates = []
+    cwd = Path.cwd()
+    for ancestor in (cwd, *cwd.parents):
+        for fname in ("settings.local.json", "settings.json"):
+            p = ancestor / ".claude" / fname
+            if p not in candidates:
+                candidates.append(p)
+    candidates.append(Path.home() / ".claude" / "settings.json")
+    found = []
+    for p in candidates:
+        if not p.exists():
+            continue
+        try:
+            cfg = json.loads(p.read_text())
+        except (json.JSONDecodeError, OSError):
+            continue
+        stop_hooks = (cfg.get("hooks", {}) or {}).get("Stop", [])
+        for entry in stop_hooks:
+            for h in entry.get("hooks", []):
+                cmd = str(h.get("command", ""))
+                if "aether" in cmd.lower() or "auto_ingest" in cmd.lower():
+                    found.append(f"{p}: {cmd}")
+    if found:
+        return {"status": "ok", "name": "claude_code_hook",
+                "messages": ["Stop hook(s) wired:", *[f"  {f}" for f in found]]}
+    return {
+        "status": "warn",
+        "name": "claude_code_hook",
+        "messages": [
+            "no aether Stop hook found in known config locations.",
+            "auto-ingest won't fire after each Claude Code turn.",
+            "see examples/claude-code-hooks/auto_ingest_hook.py to wire one.",
+        ],
+    }
+
+
+def _doctor_mcp_registration() -> dict:
+    """Look for an MCP server registration that points at aether."""
+    candidates = [
+        Path.cwd() / ".mcp.json",
+        Path.home() / ".mcp.json",
+    ]
+    found = []
+    for p in candidates:
+        if not p.exists():
+            continue
+        try:
+            cfg = json.loads(p.read_text())
+        except (json.JSONDecodeError, OSError):
+            continue
+        for name, server in (cfg.get("mcpServers", {}) or {}).items():
+            args = " ".join(str(a) for a in server.get("args", []))
+            if "aether" in name.lower() or "aether" in args.lower():
+                found.append(f"{p}: {name} = {server.get('command')} {args}")
+    if found:
+        return {"status": "ok", "name": "mcp_registration",
+                "messages": ["aether MCP server registered:", *[f"  {f}" for f in found]]}
+    return {
+        "status": "warn",
+        "name": "mcp_registration",
+        "messages": [
+            "no aether MCP server registration found in .mcp.json files.",
+            "the MCP tools won't be available to your client.",
+            "add an entry like {\"mcpServers\":{\"aether\":{\"command\":\"python\",\"args\":[\"-m\",\"aether.mcp\"]}}}",
+        ],
+    }
+
+
+def cmd_doctor(args) -> int:
+    state_path = getattr(args, "state_path", None)
+    results = [
+        _doctor_install_imports(),
+        _doctor_state_file(state_path),
+        _doctor_substrate_activity(state_path),
+        _doctor_encoder(),
+        _doctor_claude_code_hook(),
+        _doctor_mcp_registration(),
+    ]
+
+    if args.format == "json":
+        print(json.dumps({"checks": results}, indent=2))
+    else:
+        for r in results:
+            sigil = {"ok": _OK, "warn": _WARN, "fail": _FAIL}[r["status"]]
+            print(f"{sigil} {r['name']}")
+            for m in r["messages"]:
+                print(f"       {m}")
+        n_fail = sum(1 for r in results if r["status"] == "fail")
+        n_warn = sum(1 for r in results if r["status"] == "warn")
+        n_ok = sum(1 for r in results if r["status"] == "ok")
+        print(f"\nsummary: {n_ok} ok, {n_warn} warn, {n_fail} fail")
+
+    return 1 if any(r["status"] == "fail" for r in results) else 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="aether",
@@ -374,6 +650,16 @@ def build_parser() -> argparse.ArgumentParser:
                         help="skip blocking on encoder warmup (uses token-overlap fallback)")
     p_back.add_argument("--format", choices=["text", "json"], default="text")
     p_back.set_defaults(func=cmd_backfill_edges)
+
+    # doctor (v0.12.4)
+    p_doc = sub.add_parser(
+        "doctor",
+        help="diagnose install / substrate / hook / mcp wiring health",
+    )
+    p_doc.add_argument("--state-path", default=None,
+                       help="state file to check (default: AETHER_STATE_PATH or ~/.aether/mcp_state.json)")
+    p_doc.add_argument("--format", choices=["text", "json"], default="text")
+    p_doc.set_defaults(func=cmd_doctor)
 
     return p
 
