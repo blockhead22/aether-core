@@ -130,6 +130,10 @@ class MemoryGraph:
         self.graph = nx.DiGraph()
         self.persist_path = persist_path
         self._embeddings: Dict[str, object] = {}  # memory_id -> numpy array
+        # Tracked across load() / save() for external-write detection.
+        # See is_stale_on_disk() — F#7 fix lets the MCP server pick up
+        # hook writes that happened while it was idle.
+        self._loaded_mtime: Optional[float] = None
 
         if persist_path and os.path.exists(persist_path):
             self.load(persist_path)
@@ -403,6 +407,13 @@ class MemoryGraph:
             np.savez_compressed(emb_path,
                                **{k: v for k, v in self._embeddings.items()})
 
+        # Track the post-write mtime so is_stale_on_disk() doesn't see
+        # our own writes as external (F#7).
+        try:
+            self._loaded_mtime = os.stat(path).st_mtime
+        except OSError:
+            self._loaded_mtime = None
+
     def load(self, path: Optional[str] = None):
         """Load graph from JSON. Empty or missing files are treated as no-op."""
         path = path or self.persist_path
@@ -444,6 +455,40 @@ class MemoryGraph:
             if os.path.exists(emb_path):
                 loaded = np.load(emb_path)
                 self._embeddings = {k: loaded[k] for k in loaded.files}
+
+        # Record post-load mtime for external-write detection.
+        try:
+            self._loaded_mtime = os.stat(path).st_mtime
+        except OSError:
+            self._loaded_mtime = None
+
+    def is_stale_on_disk(self) -> bool:
+        """True if the persist file has been modified since last load/save.
+
+        F#7 fix: the MCP server holds graph state in memory and saves
+        on its own writes. The Stop hook writes to the same file
+        directly. Without coordination, the server's saves can clobber
+        hook writes (and vice versa).
+
+        Callers (StateStore) check this before each tool call. If
+        stale, they reload from disk before proceeding — the file
+        becomes the source of truth and external writers (the hook)
+        are picked up automatically on the next server interaction.
+
+        Returns False if there's no persist path, the file doesn't
+        exist, we have no baseline mtime (haven't loaded yet), or
+        stat() fails. Conservative: False means "don't bother
+        reloading," safe default.
+        """
+        if not self.persist_path or not os.path.exists(self.persist_path):
+            return False
+        if self._loaded_mtime is None:
+            return False
+        try:
+            current = os.stat(self.persist_path).st_mtime
+        except OSError:
+            return False
+        return current > self._loaded_mtime
 
 
 # ---------------------------------------------------------------------------

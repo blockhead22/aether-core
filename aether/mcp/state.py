@@ -16,6 +16,7 @@ v0.5.0 additions:
 
 from __future__ import annotations
 
+import functools
 import itertools
 import json
 import math
@@ -23,7 +24,7 @@ import os
 import time
 from pathlib import Path
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 import uuid
 
 from aether._lazy_encoder import (
@@ -212,6 +213,26 @@ def _looks_like_prohibition(text: str) -> bool:
 def _looks_like_imperative(text: str) -> bool:
     t = text.lower()
     return any(cue in t for cue in IMPERATIVE_CUES)
+
+
+def _sync_first(method: Callable) -> Callable:
+    """Decorator: call `_sync_from_disk_if_stale()` before the wrapped
+    StateStore method runs.
+
+    F#7 fix. The MCP server holds graph state in memory; the Stop hook
+    writes directly to the same JSON file. Without this sync, server
+    writes can clobber hook-written memories. Decorating each public
+    StateStore method that backs an MCP tool ensures every tool call
+    starts from disk-fresh state.
+
+    Cheap when nothing has changed externally (single os.stat); pays
+    a json.load cost only when the hook has written something new.
+    """
+    @functools.wraps(method)
+    def wrapper(self, *args, **kwargs):
+        self._sync_from_disk_if_stale()
+        return method(self, *args, **kwargs)
+    return wrapper
 
 
 def _is_policy_contradiction(
@@ -460,6 +481,31 @@ class StateStore:
         self._save_trust_history()
         self._save_receipts()
 
+    def _sync_from_disk_if_stale(self) -> None:
+        """Reload graph from disk if external writers (e.g. the Stop
+        hook) have modified the state file since our last load/save.
+
+        F#7 fix. The MCP server holds graph state in memory and saves
+        on its own writes; the Stop hook writes directly to the same
+        file. Without this sync, the server's saves silently clobber
+        hook-written memories.
+
+        Wrapped via the `@_sync_first` decorator on every public
+        StateStore method that backs an MCP tool. Cheap when nothing
+        has changed (single os.stat), copies the file's contents into
+        memory when it has.
+
+        Trust history and receipts are also reloaded so the full state
+        view stays consistent.
+        """
+        if not self.graph.is_stale_on_disk():
+            return
+        self.graph.load(self.state_path)
+        # Both loaders mutate self in place. Calling them keeps the
+        # auxiliary stores consistent with the freshly-loaded graph.
+        self._load_trust_history()
+        self._load_receipts()
+
     def _save_receipts(self) -> None:
         path = _receipts_path(self.state_path)
         try:
@@ -543,6 +589,7 @@ class StateStore:
     # Memory writes (with contradiction detection)
     # ------------------------------------------------------------------
 
+    @_sync_first
     def add_memory(
         self,
         text: str,
@@ -904,6 +951,7 @@ class StateStore:
         EdgeType.RELATED_TO,
     )
 
+    @_sync_first
     def add_link(
         self,
         source_id: str,
@@ -961,6 +1009,7 @@ class StateStore:
             "bidirectional": bidirectional,
         }
 
+    @_sync_first
     def backfill_edges(
         self,
         threshold: Optional[float] = None,
@@ -1046,6 +1095,7 @@ class StateStore:
     # Search
     # ------------------------------------------------------------------
 
+    @_sync_first
     def search(self, query: str, limit: int = 5) -> list[dict]:
         """Hybrid search: embedding cosine when available, substring fallback.
 
@@ -1118,6 +1168,7 @@ class StateStore:
     # Substrate-grounded belief_confidence
     # ------------------------------------------------------------------
 
+    @_sync_first
     def compute_grounding(
         self,
         text: str,
@@ -1367,6 +1418,7 @@ class StateStore:
     # Correction with cascade
     # ------------------------------------------------------------------
 
+    @_sync_first
     def correct(
         self,
         memory_id: str,
@@ -1470,6 +1522,7 @@ class StateStore:
             "total_affected": len(affected),
         }
 
+    @_sync_first
     def cascade_preview(
         self,
         memory_id: str,
@@ -1513,6 +1566,7 @@ class StateStore:
     # Lineage
     # ------------------------------------------------------------------
 
+    @_sync_first
     def lineage(
         self,
         memory_id: str,
@@ -1566,6 +1620,7 @@ class StateStore:
     # Shortest-path retrieval (Dijkstra over BDG)
     # ------------------------------------------------------------------
 
+    @_sync_first
     def compute_path(
         self,
         query: str,
@@ -1715,6 +1770,7 @@ class StateStore:
     # Contradictions and resolution
     # ------------------------------------------------------------------
 
+    @_sync_first
     def list_contradictions(
         self,
         disposition: Optional[str] = None,
@@ -1754,6 +1810,7 @@ class StateStore:
                 break
         return results
 
+    @_sync_first
     def resolve_contradiction(
         self,
         memory_id_a: str,
@@ -1807,6 +1864,7 @@ class StateStore:
     # Belief history
     # ------------------------------------------------------------------
 
+    @_sync_first
     def belief_history(self, memory_id: str) -> Dict[str, Any]:
         node = self.graph.get_memory(memory_id)
         if node is None:
@@ -1824,6 +1882,7 @@ class StateStore:
     # Memory detail
     # ------------------------------------------------------------------
 
+    @_sync_first
     def memory_detail(self, memory_id: str) -> Dict[str, Any]:
         node = self.graph.get_memory(memory_id)
         if node is None:
@@ -1874,6 +1933,7 @@ class StateStore:
     # Session diff
     # ------------------------------------------------------------------
 
+    @_sync_first
     def session_diff(self, since: float) -> Dict[str, Any]:
         """What changed in the substrate since the given timestamp."""
         new_memories = []
@@ -1925,6 +1985,7 @@ class StateStore:
     # Action receipts (v0.10) — the audit half of the governance loop
     # ------------------------------------------------------------------
 
+    @_sync_first
     def open_receipt(
         self,
         action: str,
@@ -1950,6 +2011,7 @@ class StateStore:
         self._save_receipts()
         return rid
 
+    @_sync_first
     def record_receipt(
         self,
         receipt_id: str,
@@ -1993,11 +2055,13 @@ class StateStore:
         self._save_receipts()
         return dict(r)
 
+    @_sync_first
     def get_receipt(self, receipt_id: str) -> Optional[Dict[str, Any]]:
         """Return one receipt's full record, or None if unknown."""
         r = self._receipts.get(receipt_id)
         return dict(r) if r is not None else None
 
+    @_sync_first
     def list_receipts(
         self,
         limit: int = 20,
@@ -2028,6 +2092,7 @@ class StateStore:
                 break
         return out
 
+    @_sync_first
     def receipt_summary(self) -> Dict[str, Any]:
         """Aggregate stats over all receipts: counts, verdict breakdown,
         outcome breakdown, verification pass rate.
@@ -2076,6 +2141,7 @@ class StateStore:
     # Stats
     # ------------------------------------------------------------------
 
+    @_sync_first
     def stats(self) -> dict:
         """Cheap dashboard snapshot. Must NOT trigger encoder load.
 
