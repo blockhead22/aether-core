@@ -30,6 +30,12 @@ from pathlib import Path
 
 import pytest
 
+# E2E tests need the mcp client SDK in the OUTER pytest process so
+# `mcp_session` can talk to the spawned server. Skip the whole module
+# cleanly if it's missing — preferable to a hard crash for anyone
+# running `pytest -q` without `[mcp]` installed.
+pytest.importorskip("mcp", reason="e2e suite requires the mcp client SDK; install with [mcp]")
+
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 

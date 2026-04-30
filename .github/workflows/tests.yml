@@ -15,6 +15,11 @@ jobs:
       - name: Install package
         run: |
           python -m pip install --upgrade pip
-          pip install -e .[dev]
+          # Need [mcp,graph] in addition to [dev] so the e2e harness can
+          # use the mcp client SDK and so any in-process StateStore
+          # construction has networkx available. [ml] is intentionally
+          # excluded — sentence-transformers is heavy and the cold/warm
+          # mode test owns that install path locally.
+          pip install -e .[dev,mcp,graph]
       - name: Run tests
         run: pytest -q
