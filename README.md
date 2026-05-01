@@ -50,32 +50,22 @@ pip install aether-core[mcp]     # MCP server
 pip install aether-core[all]
 ```
 
-## Quickstart (5 minutes)
+## Quickstart
 
-The substrate is most useful when wired into an MCP-speaking client. The fastest path is the Claude Code plugin.
+The substrate is most useful when wired into an MCP-speaking client. The fastest path is the Claude Code plugin — one command, no manual setup.
 
 ```bash
-# 1. Install
-pip install "aether-core[mcp,graph,ml]"
-
-# 2. Wire into Claude Code (one command, includes auto-ingest hook + slash commands)
 claude plugin install github.com/blockhead22/aether-core
-
-# 3. Confirm everything is wired
-aether doctor
-# expected: 6 ok, 0 warn, 0 fail
-
-# 4. (optional) Eagerly pull the embedding model so the first
-#    MCP call doesn't pay the load cost. Surfaces install issues
-#    (HF Hub unreachable, [ml] extra missing) immediately.
-aether warmup
-
-# 5. (project-scoped) Seed a project-local substrate with default
-#    policy beliefs (force-push, --no-verify, prod safety) so
-#    aether_sanction has something to gate against from day one.
-#    Skip with --no-defaults.
-aether init
 ```
+
+Restart Claude Code. The plugin's SessionStart hook does everything else on first run:
+
+- pip-installs `aether-core[mcp,graph,ml]` if it's not already present (or upgrades it if the installed version is too old);
+- kicks off the embedding model warmup in the background so the first MCP call pays no load cost;
+- creates `~/.aether/mcp_state.json` and seeds 7 default policy beliefs (force-push, `--no-verify`, production data safety, `rm -rf`) so `aether_sanction` gates against the obvious mistakes from minute one;
+- emits a one-time welcome message into the conversation context so you see aether is active.
+
+To verify, run `aether doctor` in a terminal — should report 7 OK checks. If `aether-core` is behind the latest PyPI release, `aether status` and `aether doctor` flag it with the upgrade command. Disable the version-drift check with `AETHER_NO_UPDATE_CHECK=1`.
 
 In a Claude session:
 
@@ -94,6 +84,20 @@ In a Claude session:
 ```
 
 Across sessions and across models, the substrate persists. Restart Claude, switch to GPT through any MCP client, the belief state is the same.
+
+### Power-user commands
+
+```bash
+aether status                              # substrate stats + version-drift notice
+aether doctor                              # 7 health checks — run this if something feels off
+aether doctor --report                     # markdown bundle for one-paste GitHub issues
+aether warmup                              # eagerly pull the embedding model (manual)
+aether init                                # scaffold a project-scoped .aether/ in the cwd
+aether contradictions                      # list current contradictions in the substrate
+aether check --message "claim text"        # grade a draft against substrate grounding
+aether uninstall-cleanup --keep-substrate  # remove logs / caches; preserve memories
+aether uninstall-cleanup --yes             # remove ~/.aether/ entirely
+```
 
 ### Manual install (any MCP client)
 

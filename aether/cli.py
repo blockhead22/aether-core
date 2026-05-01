@@ -17,8 +17,10 @@ import argparse
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from typing import Optional
+from urllib.request import Request, urlopen
 
 
 def _make_store(state_path: Optional[str] = None):
@@ -219,6 +221,63 @@ def cmd_init(args) -> int:
 # status
 # ---------------------------------------------------------------------------
 
+def _check_pypi_version(timeout: float = 2.0) -> Optional[str]:
+    """Return the latest aether-core version on PyPI, or None on failure.
+
+    Cached for 24h at ~/.aether/.pypi_version_cache.json so repeated
+    `aether status` calls don't hammer PyPI. Skips entirely when
+    AETHER_NO_UPDATE_CHECK is truthy.
+    """
+    if os.environ.get("AETHER_NO_UPDATE_CHECK", "").strip().lower() in (
+        "1", "true", "yes", "on"
+    ):
+        return None
+
+    cache = Path.home() / ".aether" / ".pypi_version_cache.json"
+    now = time.time()
+    if cache.exists():
+        try:
+            data = json.loads(cache.read_text(encoding="utf-8"))
+            if now - data.get("ts", 0) < 86400:  # 24h cache
+                return data.get("latest")
+        except (OSError, json.JSONDecodeError):
+            pass
+
+    try:
+        req = Request(
+            "https://pypi.org/pypi/aether-core/json",
+            headers={"User-Agent": "aether-core/version-check"},
+        )
+        with urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        latest = data.get("info", {}).get("version")
+        if latest:
+            try:
+                cache.parent.mkdir(parents=True, exist_ok=True)
+                cache.write_text(json.dumps({"ts": now, "latest": latest}))
+            except OSError:
+                pass
+        return latest
+    except Exception:
+        return None
+
+
+def _format_version_drift_line() -> Optional[str]:
+    """Return a one-line update-available notice, or None if up to date /
+    check skipped / network unavailable."""
+    try:
+        from aether import __version__ as installed
+    except ImportError:
+        return None
+    latest = _check_pypi_version()
+    if not latest or latest == installed:
+        return None
+    return (
+        f"  update available: aether-core {latest} on PyPI (you have {installed}). "
+        f"upgrade: pip install -U 'aether-core[mcp,graph,ml]'"
+    )
+
+
 def cmd_status(args) -> int:
     store = _make_store()
     stats = store.stats()
@@ -232,6 +291,9 @@ def cmd_status(args) -> int:
     print(f"  embeddings   : configured={stats.get('embeddings_available', False)}, "
           f"loaded={stats.get('embeddings_loaded', False)}, "
           f"warming={stats.get('embeddings_warming', False)}")
+    drift = _format_version_drift_line()
+    if drift:
+        print(drift)
     return 0
 
 
@@ -742,6 +804,84 @@ def _doctor_mcp_registration() -> dict:
     }
 
 
+def _gather_cleanup_paths(aether_dir: Path, keep_substrate: bool) -> list[Path]:
+    """Collect paths under ~/.aether/ that uninstall-cleanup would remove.
+
+    When keep_substrate=True, preserves mcp_state.json + state_trust_history.json
+    + state_receipts.json + backups/. Returns the rest (logs, markers, caches).
+    When keep_substrate=False, returns the entire .aether dir.
+    """
+    if not aether_dir.exists():
+        return []
+    if not keep_substrate:
+        return [aether_dir]
+    keep_names = {
+        "mcp_state.json",
+        "state_trust_history.json",
+        "state_receipts.json",
+        "backups",
+    }
+    targets: list[Path] = []
+    for entry in aether_dir.iterdir():
+        if entry.name in keep_names:
+            continue
+        # Manual pre-* backups land in ~/.aether/ at the top level — keep
+        # those when the user wants to preserve substrate.
+        if entry.is_file() and entry.name.startswith("mcp_state.pre_"):
+            continue
+        targets.append(entry)
+    return targets
+
+
+def cmd_uninstall_cleanup(args) -> int:
+    """Remove ~/.aether/ artifacts after plugin uninstall.
+
+    The plugin uninstall doesn't touch user data — that's correct. This
+    command gives the user an explicit, dry-run-able way to clean up
+    when they really want everything gone (testing, fresh install).
+
+    Default behavior: --dry-run is implicit. Pass --yes to actually
+    remove. Pass --keep-substrate to preserve mcp_state.json + backups
+    while clearing logs / markers / caches.
+    """
+    import shutil
+
+    aether_dir = Path.home() / ".aether"
+    targets = _gather_cleanup_paths(aether_dir, args.keep_substrate)
+
+    if not targets:
+        print(f"nothing to remove. {aether_dir} is empty or absent.")
+        return 0
+
+    mode = "preserving substrate" if args.keep_substrate else "removing everything"
+    print(f"uninstall-cleanup ({mode}). would remove:")
+    for t in targets:
+        kind = "dir" if t.is_dir() else "file"
+        try:
+            size = sum(p.stat().st_size for p in t.rglob("*") if p.is_file()) if t.is_dir() else t.stat().st_size
+            print(f"  {kind}  {t}  ({size:,} bytes)")
+        except OSError:
+            print(f"  {kind}  {t}")
+
+    if not args.yes:
+        print()
+        print("dry-run only. pass --yes to actually remove.")
+        return 0
+
+    removed = 0
+    for t in targets:
+        try:
+            if t.is_dir():
+                shutil.rmtree(t)
+            else:
+                t.unlink()
+            removed += 1
+        except OSError as e:
+            print(f"failed to remove {t}: {e}", file=sys.stderr)
+    print(f"removed {removed} item(s).")
+    return 0
+
+
 def _read_log_tail(path: Path, lines: int = 10) -> Optional[str]:
     """Return the last `lines` lines of a log file, or None if missing."""
     if not path.exists():
@@ -923,6 +1063,9 @@ def cmd_doctor(args) -> int:
         n_warn = sum(1 for r in results if r["status"] == "warn")
         n_ok = sum(1 for r in results if r["status"] == "ok")
         print(f"\nsummary: {n_ok} ok, {n_warn} warn, {n_fail} fail")
+        drift = _format_version_drift_line()
+        if drift:
+            print(drift)
 
     return 1 if any(r["status"] == "fail" for r in results) else 0
 
@@ -1004,6 +1147,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_warm.add_argument("--timeout", type=float, default=120.0,
                         help="seconds to wait for the load (default 120)")
     p_warm.set_defaults(func=cmd_warmup)
+
+    # uninstall-cleanup (v0.12.14) — remove ~/.aether/ artifacts
+    p_unin = sub.add_parser(
+        "uninstall-cleanup",
+        help="remove ~/.aether/ after plugin uninstall (dry-run by default)",
+    )
+    p_unin.add_argument("--yes", action="store_true",
+                        help="actually remove (without this, --dry-run is implicit)")
+    p_unin.add_argument("--keep-substrate", action="store_true",
+                        help="preserve mcp_state.json + backups; remove only logs / caches / markers")
+    p_unin.set_defaults(func=cmd_uninstall_cleanup)
 
     return p
 

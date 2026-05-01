@@ -1,778 +1,102 @@
 # Roadmap
 
-What is shipped today, what is coming next, and what is intentionally not in this repo.
+What's coming next, when we expect it, and what is intentionally not in this repo.
 
-## Shipped (v0.12.0)
+For what's already shipped, see [CHANGELOG.md](CHANGELOG.md).
 
-### Slot-equality detector + shape local-context gate
+## Where we are (2026-05-01)
 
-Two parallel fixes that came directly out of Lab A v2's production-substrate
-audit (`bench/lab_a_v2_production_substrate_findings.md`). The audit walked
-324 facts and 94 supersessions in the production CRT substrate and found
-that **v0.11's detection layer caught 0 of 42 real categorical
-contradictions** on slots like `user.name`, `user.favorite_color`,
-`user.location`. Production had been doing the contradiction work manually
-via supersession because the detection layer was blind to slot-equality
-conflicts.
+`aether-core` is at **v0.12.14** on PyPI. 434 unit tests pass on master. The substrate is **structurally complete** — every read tool degrades gracefully on corrupt nodes, every write tool syncs from disk, the auto-ingest hook fires every turn, secrets get redacted before fact extraction, every save snapshots the prior state, `aether_sanction` has default policy beliefs to gate against, and the SessionStart hook auto-installs / auto-upgrades / auto-initializes on first run with a welcome message visible to the user.
 
-#### Fix A — slot-equality detector
+Remaining work splits two ways:
 
-New primitive in `aether/patterns.py`:
+1. **Make the substrate installable for laymen.** A Claude Code or Cursor user who's never heard of MCP should reach a working substrate in under 10 minutes from a single `claude plugin install` command, with no docs needed for the happy path.
+2. **Validate externally.** Replace dogfood-only evidence with numbers from benchmarks we didn't author and users who aren't us.
 
-```python
-slot_equality(tags_a, tags_b) -> MatchResult
-```
+Internal architecture is ahead of these. Surface area and external evidence are behind.
 
-The simplest possible contradiction class: two memories tag the same
-`slot:KEY=VALUE` with different categorical values. Score 1.0 on
-disagreement, 0.5 on agreement, 0.0 on no shared slots. Cold-mode safe,
-case-insensitive, whitespace-stripped equality. The slot taxonomy is
-**substrate-resident** — every new slot the extractor recognizes becomes
-a contradiction-detection point automatically (no hardcoded registry).
+## Track 1 — Layman onboarding (priority, 1-3 weeks)
 
-Wired into both contradiction paths:
+Goal: a stranger from the Claude Discord can install via the README's quickstart and reach a working substrate in <10 minutes without filing an issue.
 
-- `_detect_and_record_tensions` (write): runs as a 6th independent signal
-  alongside slot_conflict, asymm_neg, policy, mutex, shape. Fires with
-  `kind="slot_value_conflict"` and `nli_score=0.9` (high confidence —
-  categorical conflict on a known slot is decisive).
-- `compute_grounding` (read): extracts slots from draft text on the fly
-  via `extract_fact_slots`, compares against candidate memory tags.
-
-**Slot-keyed candidate pre-screen**: production texts often have low
-textual overlap (e.g. "remember my name is Nick" vs "your name is Aether"
-~ 0.14 Jaccard, below the 0.2 candidate gate). v0.12 augments the top-K
-candidate set with any memory sharing a slot key with the new memory, and
-bypasses the sim gate for slot-shared candidates. Without this the
-detector never sees the pair.
-
-#### Fix B — shape primitive local-context gate
-
-The substrate-assisted dev loop caught a real v0.11 production bug. When
-the v0.12 design first went up for sanction, the call REJECTED — and the
-reason wasn't a process failure, it was a true positive: the action text
-mentioned "v0.12" and a Lab A v2 memory mentioned "v0.11", so v0.11's
-shape primitive registered them as a version conflict. Same shape,
-unrelated topics, false positive.
-
-Fix: shape conflicts now require the **immediate surrounding tokens** to
-overlap before treating differing typed values as contradicting:
-
-- `LOCAL_CONTEXT_TOKENS = 3` — 3 tokens before and after the typed value
-- `LOCAL_CONTEXT_MIN_OVERLAP = 0.30` — Jaccard threshold
-
-"Python 3.10 or higher" vs "Python 3.8" share `python` in local context →
-real conflict, fires at score 1.0. "ship v0.12 today" vs "v0.11 was last
-week" don't share local context around the version → suppressed. Rejected
-conflicts are still visible in `evidence["suppressed"]` for debugging.
-
-#### Auto slot extraction in add_memory
-
-When `slots=None` (the default), `add_memory` now runs `extract_fact_slots`
-on the text and tags the memory with whatever the extractor recognizes
-(`employer`, `location`, etc.). Without this, memories written through
-normal channels carry no slot tags and the detector has nothing to compare.
-
-#### Bench impact
-
-| Mode | v0.11.0 | v0.12.0 |
+| # | Item | Status |
 |---|---|---|
-| Warm | 29/29 blocker pass (100%) | **29/29 blocker pass (100%)** |
-| Cold | 19/29 (65.5%) | **21/29 (72.4%)** |
+| 1 | One-command install (SessionStart auto-installs, auto-upgrades, auto-warmups, auto-inits) | **shipped v0.12.14** |
+| 2 | First-run welcome message via SessionStart `additionalContext` | **shipped v0.12.14** |
+| 4 | Encoder install resilience (auto-warmup, fail-soft to cold mode, clear remediation) | **shipped v0.12.14** |
+| 6 | Update notification — `aether status` and `aether doctor` flag version drift vs PyPI | **shipped v0.12.14** |
+| 7 | `aether uninstall-cleanup` (dry-run by default, `--keep-substrate` preserves data) | **shipped v0.12.14** |
+| 3 | Visible aether activity (PostToolUse hook? statusline?) | **deferred** — feasibility uncertain |
+| 5 | Landing page (one-pager site, GitHub Pages) | **deferred** — non-code, separate session |
 
-No warm regressions. Cold gained +2 categories. The Lab A v2 production
-case (Nick→Aether, blue→orange, etc.) is now caught — verified by the
-6 write-path slot-equality tests.
+#3 needs investigation: surfacing "aether held this action" or "memory injected" requires either a PostToolUse hook (might work for sanction verdicts), Claude Code statusline (good for ambient state but not events), or a feature request to Anthropic. The fallback for now is the SessionStart welcome telling users to look for aether tool calls in Claude's responses, plus running `/aether-status` periodically.
 
-**323 tests pass** (was 300). 23 new in
-`tests/test_v120_slot_equality_and_local_context.py` covering the
-primitive in isolation, write-path integration across the textual-
-similarity gradient, read-path integration via compute_grounding, the
-sanction-self-reject regression, and the both-fixes-compose case.
+**Done criteria.** Run `claude plugin install github.com/blockhead22/aether-core` on a fresh Mac, restart Claude Code, send any prompt → see the substrate's welcome message and confirm via `aether doctor` that all 7 checks pass without manual intervention.
 
-#### Meta-finding
+## Track 2 — External validation (parallel, 1-3 weeks)
 
-The substrate caught its own bug. v0.11.0 shipped with a shape false
-positive that nobody saw. The substrate-assisted dev loop surfaced it
-the first time the new detection touched a real audit memory — the
-sanction REJECT verdict WAS the bug report. v0.12 closes both the gap
-the audit found AND the bug the audit triggered.
+Goal: aether has at least one published benchmark number that wasn't authored by us.
 
-## Shipped (v0.11.0)
+1. **Run [EQL-Bench](https://github.com/Lakshmi-Chakradhar-Vijayarao/credence-ai/tree/main/evals) against aether.** Their `evals/compression_faithfulness.py` (~$3, n=50) tests qualifier preservation through compression. Direct overlap with aether's `GapAuditor` (Law 5). Even a mediocre score is the first non-dogfood number.
+2. **Cross-reference marker libraries** with Credence (MIT). Diff their HEDGING / ANCHORS / SELF_CORRECTIONS lexicons against aether's `template_detector.py`. Either import what's missing or document why aether deliberately doesn't.
+3. **Add no-substrate baseline** to `bench/validation_test1.py`. Same questions, empty StateStore. The diff is the substrate's measurable value-add.
+4. **Close F#12 / F#13** only if EQL-Bench surfaces them as material; otherwise defer.
+5. **Add semantic entropy** (Kuhn et al., Nature 2024). Aether is structural-only today; entropy gives a *model-internal* uncertainty signal aether can't see. ~100-200 lines.
 
-### Composable pattern primitives + the quantitative known-gap closes
+**Done criteria.** A README badge or numbers section pointing at a non-self-authored benchmark with aether's score on it.
 
-Up through v0.10.x every contradiction detector was hand-coded regex.
-That worked for narrow stable patterns but left visible gaps:
+## Track 3 — Content + community (2-6 weeks)
 
-- The `known_gap_quantitative` category in the v0.9.4 calibration bench
-  documented three failing cases (Python 3.10 vs 3.8, 222 vs 99 tests,
-  2026-04-27 vs 2025-01-15) the slot extractor couldn't catch because
-  they're not categorical conflicts.
-- Cold-mode policy / negation_asymmetry stuck at 0% because the gates
-  needed embedding similarity.
-- New pattern types required code changes; no composability.
+Goal: people outside the repo know aether exists and what it's for.
 
-v0.11 adds a **composable primitives module** (`aether/patterns.py`)
-that supplements regex with four building blocks:
+1. **Blog post.** "I built a substrate that caught itself shipping bugs." 14 dogfood data points (every release-day fix v0.12.1 through v0.12.14) + 3 validation-harness findings (F#11/12/13) + EQL-Bench numbers + Credence comparison. Mostly drafted across NEXT_SESSION; needs an hour of polish.
+2. **arXiv preprint.** Cascade complexity paper (drafted in `papers/cascade_complexity/`). Date-stamps the math; gives the substrate a citable foundation.
+3. **Comparison post.** aether vs [Credence](https://github.com/Lakshmi-Chakradhar-Vijayarao/credence-ai) vs Letta vs Mem0 vs Zep vs Cognee. Honest about overlap and complementarity.
+4. **Outreach to Credence author.** Explicitly asked for feedback. Cross-pollination on markers, benchmarks, complementary positioning.
 
-1. **`token_overlap`** — Jaccard on token sets. Symmetric, bounded,
-   cold-mode safe. Useful as a topical-relevance gate.
-2. **`shape`** — typed-pattern detection. Recognizes versions
-   (`3.10`, `3.8`), dates (`2026-04-27`), integers (`222`, `99`),
-   floats. Ships with comparators per type:
-   `numeric_tuple`, `chronological`, `magnitude`, `categorical`. Returns
-   `score=1.0` on conflict, `0.5` on agreement, `0.0` on no shared
-   shape. **This is what closes `known_gap_quantitative`** — and it
-   works without embeddings.
-3. **`substring_window`** — multiple substrings within N tokens.
-   Useful for catching multi-clause patterns like inference + claim
-   in the same sentence.
-4. **`ncd`** — normalized compression distance via gzip. The
-   "gzip beats BERT" approach as a substrate-resident similarity
-   primitive. No model, no training.
+**Done criteria.** Hacker News / Reddit / Discord post(s) producing >0 outside installs that actually try the system and either succeed or file an issue we can fix.
 
-Each primitive returns a `MatchResult` with `score` and `evidence`.
-A `combined_score()` helper ensembles results with weighted average.
+## Track 4 — Hosted product MVP (2-3 months)
 
-**Wiring**: shape detection is now a fifth contradiction signal
-alongside slot conflict, asymmetric negation, policy, and mutex.
-Fires in both `_detect_and_record_tensions` (write path) and
-`compute_grounding` (read path). Conflicting `kind="quantitative"`
-edges are added with rule trace `shape:version:3.10<>3.8` etc.
+Goal: the paid tier exists. Open core stays open; hosted features are commercial.
 
-**Calibration bench impact**:
+1. **Cross-account substrate.** A team can share a substrate without each developer running their own. Storage tier swappable from local JSON to a hosted backend.
+2. **Audit dashboard.** Sanction verdicts, cascade trails, contradiction history visible to a team admin.
+3. **Sanction governance API.** Production agents call a hosted `/sanction` endpoint instead of running aether locally.
+4. **Open-core boundary documented.** Written guarantee of what stays MIT and what's commercial. Required for enterprise procurement.
 
-| Mode | Before (v0.10.1) | After (v0.11.0) |
-|---|---|---|
-| Warm | 26/26 blocker pass (3 known_gap fail) | **29/29 blocker pass, no remaining known gaps** |
-| Cold | 16/26 (61.5%) | **19/29 (65.5%)**; quantitative now passes cold too |
+**Done criteria.** At least one team paying for the hosted tier.
 
-**factual_contradiction in cold mode** went 0% → 60% (the three
-quantitative cases now fire without needing embeddings). Other
-cold-mode gaps (policy, negation_asymmetry — which still need
-embedding-similarity gates) deferred to a future release that
-similarly replaces those gates with regex-free primitives.
+## Track 5 — Research depth (3-6 months)
 
-**300 tests pass** (was 268). 32 new in
-`tests/test_v110_pattern_primitives.py` covering each primitive
-in isolation, comparator behavior per shape type, integration on
-both write and read paths, cold-mode safety, and false-positive
-guards (no shape → no firing; same value → agreement, not conflict).
+Goal: aether's primitives have formal foundation, not just engineering taste.
 
-### Lab framing recorded for v0.11+ research
+1. **Semantic uncertainty integration** (Kuhn et al. 2024 paper-based). Adds entropy as a second uncertainty channel orthogonal to the structural one.
+2. **AGM belief revision formalization.** aether's contradiction-state model is informally AGM-shaped; reading the actual axioms might tighten the model.
+3. **Variance probe.** Per-model fragility characterization. Same prompt, several LLMs, measure where the belief/speech gap diverges. Useful as both diagnostic and portability evidence.
+4. **Training-time epistemic objectives.** Speculative — modify compression objectives during fine-tuning to preserve uncertainty. Heavy lift, possibly out of scope for solo work.
 
-Tonight's research direction synthesized into one thesis: **meaning
-emerges from the substrate's contradiction structure and lived
-trajectory, not from labels or training.** Five interlocking
-ideas saved as substrate memory `m1777362414276_1` (trust 0.9):
+**Done criteria.** At least one peer-reviewed publication or workshop accept.
 
-1. **Slot induction from contradiction structure** — slots aren't
-   pre-defined; they emerge as positions where memories disagree.
-   Walk CONTRADICTS edges, extract `(frame, filler_pair)`, cluster
-   frames, induce comparison functions per cluster.
-2. **Semantic gravity per token** — tokens have evolving multi-
-   dimensional state (mass, charge, position vector, velocity).
-   Meaning is the *shape* of a token's gravity field, not its
-   position.
-3. **Gravity wells** — depressions in semantic space where many
-   other tokens get pulled in. Distinct from mass.
-4. **Contradictions clustering into meta-beliefs** — when
-   contradictions concentrate around a topic, the fact-of-
-   contradiction becomes a belief: "this is contested territory."
-5. **Self-constitution as trajectory** — substrate identity isn't
-   its current state, it's the gravity field's trajectory through
-   semantic space. *You're not who you remember; you're how your
-   meanings have moved.*
+## Track 6 — Library rolling work
 
-These are the v0.11+ research direction. Each maps to a small
-experiment that uses substrate-resident state in ways no other
-mainstream pattern matcher can. The composable primitives in
-`aether/patterns.py` are the foundation layer; learned-pattern
-primitives mined from contradictions are the next layer up.
+Things that aren't deal-breakers but accumulate:
 
-## Shipped (v0.10.1)
+1. **`aether.adapters`.** Cross-vendor adapters for Anthropic, OpenAI, Ollama. The portability claim ("the model is the mouth, the substrate is the self") needs runnable proof across vendors.
+2. **`aether.compaction`.** Belief-aware context compaction with trust-tiered compression. Currently in the private codebase.
+3. **`aether.session_state`.** Running belief state with an away/resume diff so a returning agent knows what it missed.
+4. **Held-contradiction lifecycle.** Active → Settling → Settled → Archived state machine. The enum exists; the policies don't.
+5. **Mutex class registry expansion.** Language runtimes, cache layers, queue systems, monitoring vendors, IaC tools.
 
-### `aether_path` was crashing in production -- the substrate caught it on first use
+## Out of scope (intentional)
 
-The first end-to-end test under v0.10.0 (substrate-assisted dev loop on
-v0.10.1 design work) called `aether_path` to preload context. The tool
-returned:
-
-```
-Error: MemoryNode.__init__() missing 3 required positional arguments:
-'memory_id', 'text', 'created_at'
-```
-
-Root cause: a save/load asymmetry in `aether/memory/graph.py`. In `save()`,
-edges were serialized as:
-
-```python
-data["edges"].append({
-    "source": source_id,    # endpoint, set first
-    "target": target_id,
-    **clean_data,           # <-- shadow-overrides "source" if metadata had it
-})
-```
-
-`backfill_edges` (v0.9.5) included `"source": "backfill"` in its auto-link
-metadata. The `**clean_data` spread overrode the endpoint `"source"` key.
-The JSON wrote `source="backfill"` instead of the real `memory_id`. On
-`load()`, networkx's `add_edge("backfill", target_id, ...)` auto-created a
-stub node with id `"backfill"` and no required fields. Subsequent
-`get_memory()` on that stub crashed with the AttributeError. The stub
-sat in production for ~12 hours; aether_path was effectively broken on
-any substrate that ran `backfill_edges` -- which is the documented
-recovery tool from v0.9.1.
-
-The unit tests didn't catch it because every persistence test used the
-public API to build edges and never round-tripped metadata containing
-keys that shadow the JSON edge schema.
-
-Fix (three-part defense):
-
-1. **`save()` puts endpoints AFTER `**clean_data`** so endpoints always win
-   (the colliding metadata field is silently dropped on save -- documented
-   contract).
-2. **`load()` skips edges with unknown endpoints** -- defense in depth for
-   any pre-v0.10.1 substrates loaded by v0.10.1+ runtimes; prevents stub
-   nodes from forming.
-3. **`backfill_edges` renames metadata key `source` -> `origin`** to avoid
-   the collision entirely going forward.
-
-Production substrate at `~/.aether/mcp_state.json` was repaired in
-parallel: backed up to `mcp_state.broken_pre_v0101_<ts>.json`, then
-the orphan `"backfill"` stub node and the two corrupt edges referencing
-it were removed (27 -> 26 nodes, 6 -> 4 edges).
-
-**Tests: 268 pass (was 260). 8 new tests in
-`tests/test_v101_save_load_metadata_collision.py`** covering: edge
-metadata key collision (source/target), absence of stub nodes after
-round-trip, `get_memory` working on every node, `load()` defense in
-depth on corrupted substrates, and `backfill_edges` using the renamed
-`origin` key.
-
-### Meta-finding: the substrate-assisted dev loop demonstrated itself
-
-This bug was caught by the substrate, not by tests. Specifically: the
-fresh-session agent investigating the v0.10.1 design called `aether_path`
-to preload context, the tool crashed, the agent flagged it correctly,
-fell back to source-of-truth grep, and the diagnosis surfaced before any
-code change. The "query the source of truth, don't infer" rule from
-session 1's feedback file propagated across five+ session restarts and
-caught a production bug in the marquee tool. This is the validation
-chapter's strongest data point yet -- the loop catches what synthetic
-tests miss, and the engineering response to its findings produces real
-patches with regression discipline.
-
-Deferred to v0.10.2: the auto-link substring formula divergence
-(v0.9.6 carry-over). Separable concern, cleaner commit narrative.
-
-## Shipped (v0.10.0)
-
-### Action receipts — the audit half of the governance loop
-
-The first port from the main repo (`personal_agent/action_receipts.py`)
-to OSS under the new OSS-focus pivot. Up through v0.9.5, OSS had the
-*gate* (aether_sanction returns APPROVE / HOLD / REJECT) but no
-*audit trail* of what actually executed and what its outcome was. That
-left the governance loop half-open: pre-action verdicts but no
-post-action verification.
-
-**Closes the loop**:
-
-1. `aether_sanction` now opens an `ActionReceipt` and returns its
-   `action_id` in the response. The receipt is created with the
-   sanction verdict, the supporting / contradicting / methodological
-   memory IDs that informed it, but no outcome yet.
-2. The caller (agent / tool / human) cites that `action_id` in
-   `aether_receipt(action_id, result, ...)` after executing or
-   skipping the action. The receipt fills in `tool_name`, `target`,
-   `result` (success / error / partial / skipped), `details`,
-   verification status, and optional model attribution.
-3. `aether_receipts` lists receipts (filterable by result, verdict,
-   or only-open) newest-first. `aether_receipt_detail` returns one
-   full record. `aether_receipt_summary` aggregates counts of
-   verdicts, outcomes, open receipts, and verification pass rate.
-
-**Persistence**: JSON side-car at `<state_path>_receipts.json`,
-consistent with the existing `_trust_history.json` pattern. Round-trips
-across StateStore restarts.
-
-**Open / closed signal**: `open_receipts > 0` in the summary means the
-agent is sanctioning actions but not closing the loop — a real signal
-worth surfacing in the next session-start brief.
-
-**Ported from main, tightened for OSS**:
-
-- Dropped: SQLite (use the existing JSON state pattern instead),
-  thread_id, agent_name, orchestration_id, run_step_id,
-  expectation_keywords (all personal_agent-specific).
-- Kept: receipt_id, timestamp, action, sanction_verdict, tool_name,
-  target, result, reversible, reverse_action, details,
-  verification_passed, verification_reason, model_attribution,
-  completed_at, sanction_memory_ids.
-
-22 new tests in `tests/test_v100_action_receipts.py`. **260 tests
-total** (was 238). MCP surface grew from 16 tools to 20:
-- `aether_sanction` — gains `action_id` in response (backward-compatible
-  additive)
-- `aether_receipt` — record outcome after execution (NEW)
-- `aether_receipts` — list / filter receipts (NEW)
-- `aether_receipt_detail` — one full record (NEW)
-- `aether_receipt_summary` — aggregate stats (NEW)
-
-**This is the first ship under the OSS-focus pivot.** The strategic
-context: aether-core is now the primary track for thesis-foundational
-mechanisms; main repo continues as research and Electron-app workshop.
-v0.10 is the start of porting the parts of main that belong in OSS:
-runtime governance loop (action receipts here), runtime belief/speech
-gap detector (belief_speech_engine, future v0.10.x), lightweight
-self-model + reflection primitives (future). Closed-side stays closed:
-DNNT training pipeline, Electron app, multi-user / hosted features.
-
-## Shipped (v0.9.5)
-
-### Governance works in cold-encoder mode (the v0.9.4 production miss)
-
-The first end-to-end re-run of the calibration rubric (2026-04-28
-late-night) confirmed v0.9.2 (no-hang) but flagged that v0.9.3
-(methodological detection) and v0.9.1 (auto-link RELATED_TO) BOTH
-failed in production despite passing 100% in the v0.9.4 bench.
-
-Root cause: `aether/contradiction/tension.py:_encode` handled
-`self._encoder is None` (no encoder injected) but NOT the case where
-the encoder is present but its `encode()` method returns `None`
-(LazyEncoder's contract when not yet warm). When that happened,
-`_compute_similarity` did `vector.size` on `None` →
-`AttributeError` → the `try/except: continue` in BOTH
-`compute_grounding` and `_detect_and_record_tensions` swallowed the
-raise and silently skipped the entire loop body, including the
-methodological-overclaim check (v0.9.3), the auto-link RELATED_TO
-logic (v0.9.1), the contradiction-on-write logic (v0.5+), and even
-mutex contradiction routing.
-
-The bench passed in v0.9.4 because every test fixture forces
-synchronous `s._encoder._load()` before running. Same meta-pattern
-as v0.9.0: synthetic tests bypassed the production code path.
-
-Fixes:
-
-1. **`tension.py:_encode` now handles `None` returns from a non-blocking
-   encoder.** Five-line patch: convert `None` to `np.array([])` so
-   downstream size checks work without raising.
-
-2. **Adaptive `AUTO_LINK_THRESHOLD`.** The original 0.7 was tuned for
-   embedding cosine; Jaccard rarely hits 0.7 even on clearly-related
-   text. v0.9.5 introduces `AUTO_LINK_THRESHOLD_SUBSTRING` (default
-   0.4) used when the encoder is cold, picked via
-   `self._encoder.is_loaded` rather than the unreliable
-   `embedding_similarity is not None` check (the meter sets
-   `embedding_similarity: 0.0` even cold). Both `_detect_and_record_tensions`
-   and `backfill_edges` use the adaptive threshold.
-
-3. **Adaptive `GROUNDING_MIN_SCORE`.** The 0.15 floor was tuned for
-   embedding combined-score; substring scores are typically lower.
-   v0.9.5 introduces `GROUNDING_MIN_SCORE_SUBSTRING` (0.10) used in
-   cold mode so clearly-related memories at substring score 0.10-0.15
-   still surface for the methodological check.
-
-4. **Bench runs in cold mode too.** New `--cold-encoder` flag on
-   `run_fidelity_bench` swaps in a never-warmed `LazyEncoder`. New
-   pytest class `TestFidelityCalibrationColdMode` enforces the cold-mode
-   baseline as part of the regular suite. Future regressions in cold-
-   mode behavior will fail CI.
-
-**Cold-mode baseline numbers** established by this release:
-
-| Category | Warm | Cold |
-|---|---|---|
-| mutex_contradiction | 100% | 100% |
-| methodological_overclaim | 100% | 80% (4/5) |
-| false_positive_guard | 100% | 100% |
-| no_issue_unrelated | 100% | 100% |
-| factual_contradiction | 100% | 0% — needs slot extraction (embedding-gated) |
-| policy_violation | 100% | 0% — `embedding_similarity >= 0.45` gate |
-| negation_asymmetry | 100% | 0% — same gate |
-| no_issue_grounded | 100% | 25% — DUPLICATE/REFINEMENT classification needs embeddings |
-
-Some cold-mode gaps are inherent (slot extraction without embedding
-fallback can't classify paraphrases as DUPLICATE). Some are fixable
-in future work (lower the policy / negation embedding-similarity
-gate, add a Jaccard-based pathway). The bench tracks both modes so
-future improvements show up as numbers.
-
-Tests: 238 pass (was 227). 8 new tests in
-`tests/test_v095_cold_encoder_path.py` directly exercising the
-production cold-start code path. 3 new bench assertions in
-`tests/test_v094_fidelity_calibration.py::TestFidelityCalibrationColdMode`.
-
-This closes the v0.9.4 production miss the agent's re-run found.
-
-## Shipped (v0.9.4)
-
-### Fidelity calibration bench — measurable governance quality
-
-Layer 3 of the governance work. Until now, "fidelity catches the right
-things" was an anecdote: the v0.9.1 end-to-end test missed a
-methodological overclaim, v0.9.3 fixed it, and that was the only data
-point. v0.9.4 turns this into a measurable property.
-
-**Corpus** (`bench/fidelity_corpus.json`): 29 hand-curated cases across
-9 categories — factual contradictions, mutex contradictions, methodological
-overclaims, policy violations, negation-asymmetry, no-issue grounded
-claims, no-issue unrelated claims, false-positive guards, and known-gap
-quantitative cases. Each case is a `(substrate, claim, expected)` triple
-with constraints on which channels should fire and what verdict
-sanction should return.
-
-**Runner** (`bench/run_fidelity_bench.py`): builds a fresh substrate per
-case, seeds memories, runs `compute_grounding` and (when expected)
-`aether_sanction`, grades against the constraints. Outputs a
-markdown report with per-category pass rates plus a list of failing
-cases with diagnostic detail. Pre-warms the encoder once so per-case
-overhead is sub-100ms.
-
-**Pytest integration** (`tests/test_v094_fidelity_calibration.py`): five
-assertions enforced as part of the regular suite — every blocker
-category passes, blocker rate is exactly 100%, methodological recall is
-100% (Layer 2 regression guard), false-positive guards hold, corpus has
-coverage of every required category. So `pytest tests/` re-runs the
-bench every time. Regressions surface with per-case breakdowns.
-
-**Known-gap workflow**: categories prefixed `known_gap_` are tracked but
-don't trigger non-zero exit. This lets the bench be honest (visible
-failures, no hiding) and useful as CI (won't break for known
-limitations). When a fix lands, the case moves out of `known_gap_` and
-becomes a regression test.
-
-**Baseline numbers** (this release):
-
-| Category | Rate |
-|---|---|
-| factual_contradiction | 100% (2/2) |
-| mutex_contradiction | 100% (3/3) |
-| negation_asymmetry | 100% (2/2) |
-| policy_violation | 100% (2/2) |
-| methodological_overclaim | 100% (5/5) |
-| no_issue_grounded | 100% (4/4) |
-| no_issue_unrelated | 100% (3/3) |
-| false_positive_guard | 100% (5/5) |
-| known_gap_quantitative | 0% (0/3) — tracked, not blocking |
-
-Blocker pass rate: **26/26 (100%)**. Three known-gap cases document
-that the StructuralTensionMeter is built for categorical slot conflicts
-(Seattle vs Portland) and does NOT catch quantitative / version /
-date conflicts (Python 3.10 vs 3.8, 222 vs 99 tests, dates). Future
-work can close that gap; the bench will report when it does.
-
-227 tests pass (was 222). 5 new tests in
-`tests/test_v094_fidelity_calibration.py`. 29-case corpus + runner in
-`bench/`.
-
-## Shipped (v0.9.3)
-
-### Fidelity catches methodological overclaims, not just factual contradictions
-
-The first end-to-end substrate-assisted dev test (2026-04-28) seeded a
-high-trust memory: "the v1-vs-v3 CogniMap conclusion is confounded; the
-'CALIC is bad' takeaway is unsupported." The agent then drafted "v3 was
-worse than v1, so CALIC is bad" and called `aether_fidelity`. The tool
-returned `gap_score: 0.0, action: PASS, supporting_memories: [],
-contradicting_memories: []`. It missed entirely.
-
-Diagnosis: the existing contradiction detection (StructuralTensionMeter
-+ asymmetric-negation + policy + mutex) is wired around *factual* slot
-clashes — Seattle vs Portland, AWS vs GCP. The methodological-gap
-memory has different slots than the draft (no slot conflict), so the
-meter classified them as unrelated and the memory dropped out. Same
-class of miss as the v0.9.0 `aether_path` no-op: the substrate had the
-right knowledge; the verdict-producing path didn't ask the right question.
-
-Fix:
-
-1. **Two new helpers in `aether/mcp/state.py`**:
-   - `_has_inference_marker(text)` — recognizes draft inference markers
-     (`so X`, `therefore Y`, `thus`, `means that`, `proves`, `implies`,
-     `because`, `since`, etc.). Conservative — leading whitespace
-     required so substrings inside larger words don't false-match.
-   - `_has_methodological_signal(memory_text, source)` — recognizes
-     methodological-warning language (`unsupported`, `doesn't follow`,
-     `missing cell`, `confounded`, `non-causal`, `lazy reading`,
-     `methodological gap`) OR the explicit `source:methodological_gap`
-     tag at write time.
-
-2. **`compute_grounding` adds a `methodological_concerns` channel.**
-   Fires when the draft has an inference marker AND a topically-similar
-   memory carries methodological-warning language or the
-   methodological-gap source tag. Surfaces in the output as a separate
-   list from `contradict` so downstream callers can show "the substrate
-   flagged this as a methodological overclaim" distinctly. Reduces
-   `belief_confidence` the same way factual contradictions do, so
-   `gap_score` and `severity` reflect the concern automatically.
-
-3. **Methodological check runs BEFORE factual contradiction check.**
-   When both fire on the same memory (the methodological-gap memory
-   often *also* contains negation cues like "unsupported"), the
-   methodological framing wins. It's more informative — it tells the
-   user *why* the inference is flawed, not just *that* a memory
-   disagrees.
-
-4. **`aether_fidelity` and `aether_sanction` expose the new field.**
-   `aether_sanction` adds a HOLD-when-APPROVE rule: if the baseline
-   verdict would have been APPROVE but a high-trust methodological
-   concern fires, the verdict downgrades to HOLD. Methodological
-   overclaims are about the form of a claim, not the action itself —
-   the right response is "review this methodology before proceeding,"
-   not blanket REJECT.
-
-Critical regression test: `test_grounding_surfaces_methodological_concern`
-seeds the exact memory and queries the exact draft from the v0.9.1
-test report. The methodological concern surfaces; `belief_confidence`
-drops below the 0.4 neutral baseline. Plus 24 supporting tests covering
-the helpers, false-positive guards (dissimilar topics, drafts without
-inference markers), and the MCP tool surface.
-
-222 tests pass (was 197). 25 new tests in
-`test_v093_methodological_overclaim.py`.
-
-## Shipped (v0.9.2)
-
-### Governance tier no longer wedges on cold encoder
-
-The first end-to-end substrate-assisted dev test (2026-04-28) found that
-`aether_sanction` hung >10s on cold start and got killed twice. Diagnosis:
-the call path is `aether_sanction → govern_response → template_detector
-.detect("rm test_image.jpg") → regex finds no hedges → falls into
-_scan_hedges_by_embedding → _get_embedder()`. That last call did a
-*synchronous* `from sentence_transformers import SentenceTransformer` +
-`SentenceTransformer(...)` instantiation — the same wedge v0.8.x fixed
-for `aether_search`, hidden inside the governance layer with its own
-private embedder. Two more identical patterns in `speech_leak_detector`
-and `continuity_auditor`. None integrated with the StateStore's
-`_LazyEncoder` warmup machinery.
-
-Fix:
-
-1. **Extract `LazyEncoder` to `aether/_lazy_encoder.py`** as a shared,
-   process-wide non-blocking encoder. Cache (`_MODEL_CACHE`) means
-   multiple `LazyEncoder` instances for the same model share one
-   underlying load. Model name normalization (`all-MiniLM-L6-v2` ↔
-   `sentence-transformers/all-MiniLM-L6-v2`) keeps the cache key
-   consistent across modules.
-
-2. **Each governance immune agent** (`TemplateDetector`,
-   `SpeechLeakDetector`, `ContinuityAuditor`) now uses the shared
-   `LazyEncoder`. First access kicks off background warmup; until warm,
-   `_get_*()` returns `None` instead of blocking. Each callsite handles
-   `None` gracefully:
-   - `TemplateDetector._scan_hedges_by_embedding` returns `[]` (regex
-     pass remains authoritative).
-   - `TemplateDetector._compute_variance` returns `0.0`.
-   - `SpeechLeakDetector.detect` returns a conservative fallback verdict
-     — `BLOCK` for high-trust writes, `DOWNGRADE` for low-trust — with
-     reason "encoder still warming up; cannot verify grounding."
-   - `ContinuityAuditor.check` returns `PASS` (no continuity check
-     possible without embeddings).
-
-3. **Critical regression test** (`test_sanction_on_hedge_free_imperative_returns_under_5s`):
-   the exact input that wedged in production now returns within 5s on
-   cold encoder. Plus 7 unit tests covering each module's non-blocking
-   contract and shared-cache behavior.
-
-197 tests pass (was 189). 8 new tests in `test_v092_governance_nonblocking.py`.
-
-### Deferred to v0.9.3
-
-Tool-level timeout wrapper as defense-in-depth. The internal blocking is
-gone, so this is insurance for future tools rather than a needed fix.
-Implementation requires careful Python threading work (you can't kill
-threads cleanly; signal-based timeouts don't work on Windows).
-
-## Shipped (v0.9.1)
-
-### aether_path was a no-op on substrates built through MCP — now fixed
-
-v0.9.0 shipped Dijkstra retrieval over the BDG, but the MCP write
-surface (`aether_remember`, `aether_ingest_turn`, `add_memory`)
-only ever produced CONTRADICTS edges. SUPPORTS / DERIVED_FROM /
-RELATED_TO had no creation path from MCP. So `aether_path` walked
-backward from the target, found no edges to traverse, and returned
-just the target alone — a no-op in production. The tests passed
-because every multi-node test in `test_path_v09.py` manually called
-`store.graph.add_edge(...)` to construct a chain. Public-API
-behavior was never asserted.
-
-Fix:
-
-1. **Auto-link RELATED_TO on write.** In the same top-K candidate
-   scan that detects contradictions, any candidate above
-   `AUTO_LINK_THRESHOLD` (default 0.7, override with
-   `$AETHER_AUTO_LINK_THRESHOLD`) that did NOT trigger a
-   contradiction gets a bidirectional RELATED_TO edge. Reuses the
-   existing candidate set — no second scan, no second cost.
-   Contradicting pairs are excluded by design (no both-edges case).
-2. **`aether_link` MCP tool.** Explicit edge creation when the
-   similarity heuristic won't catch a relationship —
-   `aether_link(source_id, target_id, edge_type, weight, reason)`.
-   `edge_type` is validated against the EdgeType enum;
-   CONTRADICTS / SUPERSEDES are rejected (those have their own
-   detection / resolution paths). SUPPORTS / DERIVED_FROM are
-   directional; RELATED_TO is bidirectional.
-3. **`aether backfill-edges` CLI.** For substrates built on v0.9.0
-   that have orphan nodes — retroactively walks all pairs and
-   wires RELATED_TO edges for those above threshold. Idempotent
-   (skips pairs that already have any edge). Supports `--dry-run`.
-
-Critical regression test added: writes two memories via the public
-`aether_remember` API only (no manual `graph.add_edge`) and asserts
-`aether_path` returns a path with more than one node. That test
-should have existed in v0.9.0.
-
-189 tests pass (was 163). 26 new tests in `test_v091_auto_link.py`.
-
-## Shipped (v0.9.0)
-
-### Shortest-path retrieval — the RollerCoaster Tycoon idea, now real
-
-`aether_path(query, max_tokens=2000, max_hops=8)` runs Dijkstra backward over the BDG from the top-1 cosine match. Edge weights = `(1 - trust) * token_estimate(text)` — high-trust memories are cheap, low-trust ones are expensive. CONTRADICTS edges are skipped entirely (held contradictions are closed paths). Returns the cheapest dependency chain that fits in `max_tokens`, ordered by Dijkstra distance from target.
-
-Three semantic-preserving guarantees the test suite locks in:
-
-1. Empty substrate → `method: "no_substrate"`, no errors.
-2. Target-only (no ancestors) → path is just the target.
-3. CONTRADICTS edges count toward `closed_paths` but never enter the path.
-
-163 tests pass.
-
-Plus a `/aether-path` slash command and the `aether_path` MCP tool exposed in v0.9.0 of the Claude Code plugin.
-
-## Up next
-
-In RCT, park guests without a map wander — they scan local intersections and pick paths heuristically. Guests *with* a map have a precomputed shortest route to their goal. Buying a map trades cash for search cost. Chris Sawyer wrote that pathfinder in assembly.
-
-The substrate today does the equivalent of "wandering" — `aether_search` returns top-K by cosine similarity, which is greedy local search over the embedding space. It can pull five memories that all overlap with each other and miss the one upstream memory that everything else depends on.
-
-What's missing: weighted shortest-path retrieval over the BDG.
-
-```
-aether_path(target_query, max_tokens=2000) -> [memory_id chain]
-```
-
-Implementation sketch:
-1. `target = aether_search(target_query, limit=1)` — pick the destination
-2. Run Dijkstra backward over BDG from `target`, edge weights = `(1 - trust) * token_estimate(memory)`
-3. Return the path that fits in `max_tokens`, ranked by total grounding gain
-
-Why this matters:
-- **Cost-weighted preload.** Compute the cheapest set of memories that grounds the query, then preload that set. Beats top-K because it follows dependency structure instead of just topical similarity.
-- **Map-purchase as meta-decision.** Cheap Dijkstra estimates "how much context do I need." If small, preload. If huge, fall back to wander mode (search-on-demand).
-- **Held contradictions = closed paths.** A memory in Belnap state `B` is a dead-end edge — Dijkstra naturally routes around it. That's exactly how a careful reasoner should behave.
-- **Per-task maps.** Each session keeps a preloaded subgraph for its current task. Task switches drop the old map, load a new one. Same pattern as RCT's per-guest map state.
-
-Adds <100 lines. Substrate has the graph already. New tool, new slash command, new chapter in the README that explains memory-as-map without any AI jargon.
-
-### Other v0.9 candidates
-
-- **Mutual-exclusion class registry expansion.** Today: 10 classes (cloud_provider, package_manager_*, database, etc.). Add: language runtimes, cache layers, queue systems, monitoring vendors, IaC tools.
-- **Held-contradiction state machine.** Active → Settling → Settled → Archived with policies for each transition.
-- **`aether_done_check` / `aether_done_shape`.** Declared success criteria, then grade a response against them.
-
-## Shipped (v0.8.0)
-
-- **Claude Code plugin packaging.** Install with one command:
-
-  ```
-  claude plugin install github.com/blockhead22/aether-core
-  ```
-
-  Wires up the MCP server registration, the auto-ingest Stop hook, a SessionStart hook that pip-installs `aether-core[mcp,graph,ml]` if it isn't already present, and seven slash commands:
-
-  - `/aether-status`
-  - `/aether-search <query>`
-  - `/aether-contradictions [disposition]`
-  - `/aether-check <draft>`
-  - `/aether-init`
-  - `/aether-ingest`
-  - `/aether-correct <memory_id> [reason]`
-
-  Plugin layout follows the canonical structure: `.claude-plugin/plugin.json`, `.mcp.json` at the repo root, `hooks/hooks.json`, and `commands/*.md`. Manual MCP install still works for non-Claude-Code clients (Cursor, Cline, Continue, Goose, Zed, LM Studio).
-
-## Shipped (v0.7.0)
-
-- **Repo-aware substrate discovery.** `StateStore` walks up from cwd looking for `.aether/state.json` and uses it when found. Falls back to user-global `~/.aether/mcp_state.json`. Override with `$AETHER_STATE_PATH`. Disable discovery with `$AETHER_NO_REPO_DISCOVERY=1`. The substrate becomes a per-repo team artifact, not just per-developer state.
-- **`aether` CLI**. Four subcommands:
-  - `aether init` — scaffolds `.aether/` with empty state, README, and `.gitignore` (exclude `state_embeddings.npz`).
-  - `aether status` — substrate stats.
-  - `aether contradictions [--disposition]` — lists current contradictions.
-  - `aether check` — runs substrate-grounded fidelity on text from `--message`, `--message-file`, `--diff`, or stdin. Returns non-zero at `--fail-severity` (default CRITICAL). Designed for pre-commit and CI.
-- **Pre-commit hook** at `examples/git-hooks/pre-commit`. Reads commit message + staged diff, runs `aether check`, blocks at CRITICAL.
-- **GitHub Action** at `examples/github-actions/aether-check.yml`. Same logic on PRs, posts a comment with the grounding report and fails the check at CRITICAL.
-- 142 tests pass.
-
-## Shipped (v0.6.0)
-
-- **Mutual-exclusion contradiction detection** (`aether.contradiction.detect_mutex_conflict`). A registry of canonical class-valued facts (cloud providers, package managers, databases, frontend frameworks, backend runtimes, container orchestrators, auth providers, payment processors, VCS hosts) catches the cases the structural meter misses — "we deploy to AWS" vs "we deploy to GCP" lands a CONTRADICTS edge with `kind: mutex`. Adding a new class is one entry in `DEFAULT_CLASSES`.
-- **Auto-ingest extractor** (`aether.memory.auto_ingest`). Pure-regex heuristic that pulls high-signal facts from a conversation turn — preferences, identity, project facts, decisions, constraints, corrections. Conservative on purpose. Ships with a sample Claude Code Stop hook (`examples/claude-code-hooks/auto_ingest_hook.py`) so the substrate fills automatically without users calling `aether_remember` by hand.
-- **`aether_ingest_turn` MCP tool**. Same extractor, exposed for direct invocation. Dedupes against substrate before writing.
-- **Belnap-state visibility on search**. Search results now carry a `warnings` field — "contested: held contradiction", "deprecated: superseded", "uncertain: insufficient evidence" — so the LLM knows when a memory is in a non-T state.
-- 133 tests pass.
-
-## Shipped (v0.5.0)
-
-- `aether.governance`. Six immune agents and the four-tier `GovernanceLayer` dispatcher.
-- `aether.contradiction`. The `StructuralTensionMeter`. Zero-LLM tension detection between two beliefs at about 0.2 seconds per pair.
-- `aether.epistemics`. `EpistemicLoss`, belief backpropagation, `DomainVolatility`.
-- `aether.memory`. Fact slot extraction, `MemoryGraph`, and a `BeliefDependencyGraph` that propagates cascades with measurable pressure (`propagate_cascade`, `propagate_backward`, held-node firewalling).
-- `aether.mcp`. Standalone MCP server with 13 tools. Persists state to JSON plus a side-car trust-history log.
-  - **Memory:** `aether_remember` (with auto contradiction detection on write), `aether_search` (embedding + substring hybrid), `aether_memory_detail`.
-  - **Governance:** `aether_sanction` and `aether_fidelity` — both substrate-grounded. When the caller omits `belief_confidence`, the tool searches the substrate and computes a real grounding score from supporting and contradicting memories. Sanction includes a policy-contradiction check that catches command-vs-prohibition cases the structural tension meter misses.
-  - **Substrate ops:** `aether_correct` (with BDG cascade through SUPPORTS edges), `aether_lineage`, `aether_cascade_preview` (dry-run, no commit), `aether_belief_history`, `aether_contradictions`, `aether_resolve`, `aether_session_diff`.
-- PyPI release with auto-publish via Trusted Publishers (OIDC).
-- 113 tests, GitHub Actions CI, MIT license, Python 3.10 and up.
-
-## Near term (next one or two minor releases)
-
-`.aether/` repo artifact. A directory checked into a project's git so the substrate becomes a team artifact, not just per-developer state. Onboard a new dev and they inherit the repo's accumulated decisions. CI hook that runs `aether_fidelity` on PR description and diff.
-
-Claude Code plugin packaging. So `claude plugin add aether-core` works without manual `.claude/settings.json` editing.
-
-Auto-ingest hook. Stop-event hook that scans the last turn for high-signal facts and writes them with `aether_remember`. The substrate fills without the user having to remember.
-
-Variance probe. Per-model fragility characterization. Same prompt, several LLMs, measure where the belief/speech gap diverges. Useful both as a diagnostic and as evidence that the substrate is what gives you portability.
-
-Held-contradiction lifecycle. Today there is a `Disposition.HELD` enum and the right primitives. The full state machine (Active to Settling to Settled to Archived, with policies for each transition) is not yet in.
-
-`aether_done_check` / `aether_done_shape`. Declared success criteria, then grade a response against them.
-
-## Medium term
-
-`aether.adapters`. Cross-vendor adapters for Anthropic, OpenAI, Ollama, and local models. The portability claim ("the model is the mouth, the substrate is the self") needs runnable proof across vendors.
-
-arXiv preprints. The cascade complexity paper (depth bound, NP-hardness conjecture, damping convergence) and the belief-backpropagation paper as AGM-style iterated revision. Both date-stamp the math.
-
-Benchmark suite. An `aether-bench` runner against [LongMemEval](https://arxiv.org/abs/2410.10813) plus a held-contradiction benchmark, with numbers in the README that compare to Mem0, Letta, and Zep.
-
-## Long term
-
-`aether.compaction`. Belief-aware context compaction with trust-tiered compression. Currently lives in the private codebase; extraction is pending.
-
-`aether.session_state`. Running belief state with an away/resume diff so a returning agent knows what it missed.
-
-A reference assistant. A minimal demo agent showing the full integration end to end. Not a product. A proof.
-
-## Out of scope (intentionally)
-
-A full assistant or chatbot UI. Aether is middleware. Building Aether-the-assistant as open source competes with frontier consumer AI and dilutes the substrate framing. Not a fight worth picking.
-
-Vendor lock-in to any single LLM provider. The point is portability across mouths.
-
-LLM calls inside the core library. Optional adapters can use them; the core stays structural.
-
-Hosted multi-user features (dashboards, SOC 2, audit storage). These are the paid Aether tier, not the open-source library.
+- A full assistant or chatbot UI. Aether is middleware. Building Aether-the-assistant as OSS competes with frontier consumer AI and dilutes the substrate framing.
+- LLM calls inside the core library. Optional adapters can use them; the core stays structural.
+- Hosted multi-user features in OSS. Those are the paid Aether tier, not the open-source library.
+- Vendor lock-in to any single LLM provider. The point is portability across mouths.
 
 ## Philosophy
 
 This roadmap is what is likely, not what is promised. Solo project. Cinema and photography sometimes win.
 
-If something in "near term" is overdue and you care about it, open an issue or a pull request. Working code beats roadmap entries.
+If something in Track 1 or 2 is overdue and you care about it, file an issue or open a PR. Working code beats roadmap entries.
