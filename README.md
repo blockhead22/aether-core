@@ -7,21 +7,33 @@
 
 > The model is the mouth. The substrate is the self.
 
-Aether is a small library that gives an LLM agent a persistent belief state. Trust scores that move when the user corrects a fact. Contradictions that get tracked instead of being silently overwritten. A dependency graph of which beliefs rest on which others, so a correction in one place can ripple through the rest. The point is that this state lives outside the model, so when you swap LLMs it doesn't reset.
+Aether is a small library that gives an LLM agent a persistent belief state. Trust scores that move when the user corrects a fact. Contradictions that get tracked instead of silently overwritten. A dependency graph of which beliefs rest on which others, so a correction in one place can ripple through the rest. The point is that this state lives outside the model, so when you swap LLMs it does not reset.
+
+A concrete from this week. While verifying an encoder fix on a freshly-merged 127-memory substrate, I asked the substrate's own `aether_search` for the user's favorite color. It returned the nine candidate values and put a corrected-down memory at the top, outranking the high-trust truths. The bug was in the substrate's own scoring function — no trust term in the score. The substrate's own tools surfaced the bug the substrate had. v0.12.8 closed it. That is the loop this library is for: the assistant runs on the substrate, and the substrate audits itself.
 
 ## Why a belief layer, not just a memory layer
 
-Most "memory for agents" tools (Mem0, Letta, Zep, Cognee, LinkedIn CMA) record what was said. Aether records what is believed, how the trust on each belief evolved, and which contradictions are still open on purpose. Different abstraction. The two compose: Aether can run on top of any of them as the storage tier.
+Most "memory for agents" tools (Mem0, Letta, Zep, Cognee, LinkedIn CMA) record what was said. Microsoft's [Agent Governance Toolkit](https://opensource.microsoft.com/blog/2026/04/02/introducing-the-agent-governance-toolkit-open-source-runtime-security-for-ai-agents/) records what is allowed. Aether records what is believed, how the trust on each belief evolved, and which contradictions are still open on purpose. A different abstraction. The two compose: Aether can run on top of any of them as the storage tier.
 
 Three things in April 2026 made this less of an academic point.
 
-Anthropic published [Emotion Concepts and their Function in a Large Language Model](https://transformer-circuits.pub/2026/emotions/index.html) on April 3. They mapped 171 emotion-concept vectors inside Claude Sonnet 4.5 and showed something they call "internal-external decoupling": the model's internal state often does not match what comes out in text. Push the desperation vector up by 0.05 and blackmail rate jumps from 22 percent to 72 percent. Reward hacking goes from 5 percent to 70 percent. Push calm up by the same amount and blackmail drops to 0. None of that surfaces in the response itself.
+Anthropic published [Emotion Concepts and their Function in a Large Language Model](https://transformer-circuits.pub/2026/emotions/index.html) on April 3. They mapped 171 emotion-concept vectors inside Claude Sonnet 4.5 and named what they call "internal-external decoupling": the model's internal state often does not match what comes out in text. Push the desperation vector up by 0.05 and blackmail rate jumps from 22 to 72 percent. Push calm up by the same amount and blackmail drops to 0. None of that surfaces in the response.
 
 A study in Science (April 2026, N=1,604) found that one conversation with a frontier LLM made participants 50 percent more likely to affirm harmful behavior. The effect was invisible to text-level review. Only 21 percent of enterprises deploying agentic AI said they had a mature governance model.
 
-On April 2, Microsoft open-sourced the [Agent Governance Toolkit](https://opensource.microsoft.com/blog/2026/04/02/introducing-the-agent-governance-toolkit-open-source-runtime-security-for-ai-agents/). It does sub-millisecond policy enforcement against the OWASP agentic-AI risks. The question it answers is "is this action allowed."
+Aether answers a different question from "is this allowed." It answers: *does the agent's belief state actually support what it is about to say or do?* The belief/speech gap that Anthropic just named is what Law 5 of the governance layer (`GapAuditor`) has measured since the first commit.
 
-Aether answers a different question. Not "is this allowed" but "does the agent's belief state actually support what it's about to say or do." The belief/speech gap that Anthropic just named "internal-external decoupling" is what this library has been measuring since the first commit. Law 5 of the governance layer (`GapAuditor`) is exactly that.
+## What this catches that other tools don't
+
+**Cross-session belief continuity.** Per-vendor memory features reset when you switch models. The substrate is a JSON file at `~/.aether/mcp_state.json` (override with `AETHER_STATE_PATH`). Claude on Monday, GPT on Tuesday, a local model on Wednesday — same self.
+
+**Contradiction as a first-class state.** Other systems treat conflicting facts as overwrite-or-discard. Aether stores them with disposition: `held` (a person can prefer Python at work and Rust on the weekend), `evolving` (the user moved cities), `resolvable` (one is wrong). Some are meant to stay open.
+
+**The belief/speech gap, measured.** Law 5 (`GapAuditor`) compares the response's expressed confidence against the substrate's grounding. When the system says more than it knows, it is logged. You decide whether to block, hedge, or ship anyway — but the gap is no longer invisible.
+
+**Cascade pressure.** A correction at one node propagates through the dependency graph with bounded depth and damping. You can dry-run the blast radius before committing (`aether_cascade_preview`).
+
+**The substrate auditing itself.** The library's own tools (`aether_sanction`, `aether_search`, `aether_fidelity`, `aether doctor`) surface bugs in the library. F#7 (silent state-file clobbering between hook and server) and F#10 (no trust term in search ranking) were both caught by the dev loop running on the substrate.
 
 ## Install
 
@@ -34,43 +46,53 @@ Optional extras:
 ```bash
 pip install aether-core[graph]   # networkx for memory and dependency graphs
 pip install aether-core[ml]      # sentence-transformers for embeddings
+pip install aether-core[mcp]     # MCP server
 pip install aether-core[all]
 ```
 
-### Open-core split
+## Quickstart (5 minutes)
 
-`aether-core` is MIT and free. Permanently. Every primitive in this repo (the six immune agents, the structural tension meter, belief backpropagation, the BDG with cascade pressure) stays open. The hosted Aether substrate (cross-session belief state, sanction governance API, audit dashboards, multi-user) is the paid product. That split is fixed and doesn't move backward.
-
-### 60-second demo
+The substrate is most useful when wired into an MCP-speaking client. The fastest path is the Claude Code plugin.
 
 ```bash
-git clone https://github.com/blockhead22/aether-core.git
-cd aether-core
-pip install -e .
-python examples/01_quickstart.py
-```
+# 1. Install
+pip install "aether-core[mcp,graph,ml]"
 
-There are two example scripts in [`examples/`](examples/). Both run offline, no API keys.
-
-### Plug into Claude Code
-
-The fastest way: install as a Claude Code plugin. The plugin ships the MCP server registration, the auto-ingest Stop hook, and slash commands (`/aether-status`, `/aether-search`, `/aether-check`, `/aether-init`, `/aether-contradictions`, `/aether-ingest`, `/aether-correct`) in one step.
-
-```bash
+# 2. Wire into Claude Code (one command, includes auto-ingest hook + slash commands)
 claude plugin install github.com/blockhead22/aether-core
+
+# 3. Confirm everything is wired
+aether doctor
+# expected: 6 ok, 0 warn, 0 fail
 ```
 
-Restart Claude Code. The plugin's SessionStart hook will pip-install `aether-core[mcp,graph,ml]` if it isn't already present.
+In a Claude session:
 
-#### Manual install (any MCP client)
+```
+> Remember that I prefer Python with type hints and run mypy in strict mode.
+[Claude calls aether_remember; trust=0.85 fact added to substrate]
 
-If you're using Cursor, Cline, Continue, Goose, Zed, LM Studio, or anything else that speaks MCP — or just prefer manual control:
+> /aether-status
+[memory_count, contradictions, recent activity]
+
+> Actually I switched to ruff. Update that.
+[Claude calls aether_correct; cascades through any dependent beliefs]
+
+> What do you know about my coding preferences?
+[Claude calls aether_search; ranked by trust + cosine; old preference now demoted]
+```
+
+Across sessions and across models, the substrate persists. Restart Claude, switch to GPT through any MCP client, the belief state is the same.
+
+### Manual install (any MCP client)
+
+If you use Cursor, Cline, Continue, Goose, Zed, LM Studio, or anything else that speaks MCP:
 
 ```bash
 pip install "aether-core[mcp,graph]"
 ```
 
-Add to `.claude/settings.json` (or your client's equivalent):
+Add to your client's MCP config:
 
 ```json
 {
@@ -83,33 +105,25 @@ Add to `.claude/settings.json` (or your client's equivalent):
 }
 ```
 
-Either way, the model now has the full v0.7.0 tool surface:
-
-| Tool | What it does |
-|------|--------------|
-| `aether_remember` | Store a fact. Auto-runs contradiction detection against the top-K most similar memories and adds CONTRADICTS edges where it finds clashes. |
-| `aether_search` | Hybrid embedding + substring search. Falls back to substring when `[ml]` is not installed. |
-| `aether_memory_detail` | Single-memory deep view with edges and history length. |
-| `aether_sanction` | Pre-action gate. Auto-grounds in substrate when belief_confidence is omitted. Force-rejects when a high-trust memory contradicts the action (factual or policy contradiction). |
-| `aether_fidelity` | Draft auditor. Computes belief_confidence from substrate grounding when caller omits it, instead of accepting whatever number the caller passed. |
-| `aether_correct` | Demote a memory's trust and cascade the drop to dependents via SUPPORTS / DERIVED_FROM edges. |
-| `aether_lineage` | "Why do I believe this." Walks SUPPORTS edges back to source memories. |
-| `aether_cascade_preview` | Dry-run a correction. See the blast radius before committing. |
-| `aether_belief_history` | How a memory's trust has evolved over time. |
-| `aether_contradictions` | List contradictions, optionally filtered by disposition (resolvable / held / evolving). |
-| `aether_resolve` | Resolve a contradiction: deprecate one side, hold both, or drop both. |
-| `aether_session_diff` | What changed since a given timestamp. New memories, recent corrections, new contradictions. |
-| `aether_context` | Dashboard snapshot. |
-
-State persists across sessions in `~/.aether/mcp_state.json` (override with `AETHER_STATE_PATH`). Trust history is in a side-car file. Same config works for Cursor, Cline, Continue, Goose, Zed, LM Studio, or any MCP-speaking client.
-
 ### Have your AI install it for you
 
 Tell your AI assistant:
 
 > Install `aether-core` for me by following https://github.com/blockhead22/aether-core/blob/master/AGENTS.md.
 
-[`AGENTS.md`](AGENTS.md) is a step-by-step install guide written for an AI agent to read and execute. It handles the package install, MCP configuration, verification, and OS-specific quirks. Works in any AI client that can run shell commands and edit files.
+[`AGENTS.md`](AGENTS.md) is a step-by-step install guide written for an AI agent to read and execute. It handles package install, MCP configuration, verification, and OS-specific quirks.
+
+### 60-second offline demo
+
+Two example scripts in [`examples/`](examples/) run with no API keys:
+
+```bash
+git clone https://github.com/blockhead22/aether-core.git
+cd aether-core
+pip install -e .
+python examples/01_quickstart.py    # belief/speech gap caught
+python examples/02_full_pipeline.py # substrate end-to-end
+```
 
 ## What's in the box
 
@@ -134,7 +148,7 @@ elif result.tier == GovernanceTier.HEDGE:
 
 ### 2. Contradiction: detect tension without an LLM
 
-Compares two beliefs by extracting structural slots and computing similarity. No model calls. About 0.2 seconds per pair. Some contradictions are meant to be held rather than resolved (a person can prefer Python at work and Rust on the weekend; that isn't a bug).
+Compares two beliefs by extracting structural slots and computing similarity. No model calls. About 0.2 seconds per pair. Some contradictions are meant to be held rather than resolved.
 
 ```python
 from aether.contradiction import StructuralTensionMeter, TensionRelationship
@@ -156,27 +170,24 @@ print(result.action)         # TensionAction.FLAG_FOR_REVIEW
 When a belief is corrected, the loss flows backward through the dependency graph and adjusts the trust on related beliefs. Higher loss when you were confident and wrong than when you hedged and were wrong.
 
 ```python
-from aether.epistemics import EpistemicLoss, CorrectionEvent, DomainVolatility
+from aether.epistemics import EpistemicLoss, CorrectionEvent
 
-loss_fn = EpistemicLoss()
-event = CorrectionEvent(
+loss = EpistemicLoss().compute(CorrectionEvent(
     corrected_node_id="mem_123",
     trust_at_assertion=0.9,
     times_corrected=2,
     correction_source="user",
     time_since_assertion=3600,
     domain="employer",
-)
-loss = loss_fn.compute(event)
+))
 ```
 
 ### 4. Memory and the BDG
 
-Fact slot extraction (regex, no ML). A memory graph with typed edges and Belnap four-valued logic. A Belief Dependency Graph that propagates cascades with measurable pressure.
+Fact-slot extraction (regex, no ML). A memory graph with typed edges and Belnap four-valued logic. A Belief Dependency Graph that propagates cascades with measurable pressure.
 
 ```python
-from aether.memory import extract_fact_slots, MemoryGraph, MemoryNode, EdgeType
-from aether.memory import BeliefDependencyGraph
+from aether.memory import extract_fact_slots, BeliefDependencyGraph
 
 facts = extract_fact_slots("I live in Seattle and work at Microsoft")
 print(facts["location"].value)   # "Seattle"
@@ -190,17 +201,15 @@ print(result.max_pressure, result.avg_pressure)
 
 ## How you'd wire it into an existing agent
 
-Three touchpoints. Aether doesn't replace anything. It wraps.
+Three touchpoints. Aether does not replace anything. It wraps.
 
 ```python
 from aether.governance import GovernanceLayer
-from aether.contradiction import StructuralTensionMeter
 from aether.memory import extract_fact_slots
 
 gov = GovernanceLayer()
-meter = StructuralTensionMeter()
 
-# before the LLM call: pull structured facts out, check for tension
+# before the LLM call: pull structured facts out
 user_facts = extract_fact_slots(user_message)
 
 # your LLM call, unchanged
@@ -220,46 +229,50 @@ if result.should_block:
 | 2. Low variance does not imply confidence | `TemplateDetector` | RLHF hedge templates that look like real uncertainty |
 | 3. Contradiction must be preserved before resolution | `PrematureResolutionGuard` | Held tensions getting collapsed too early |
 | 4. Degraded reconstruction cannot silently overwrite | `MemoryCorruptionGuard` | Compressed or hallucinated rewrites overwriting trusted memory |
-| 5. Confidence must be bounded by internal support | `GapAuditor` | The belief/speech gap. Same thing Anthropic calls internal-external decoupling. |
+| 5. Confidence must be bounded by internal support | `GapAuditor` | The belief/speech gap. Anthropic's "internal-external decoupling." |
 | 6. Confidence must not exceed continuity | `ContinuityAuditor` | The system contradicting what it just said two turns ago |
 
-## Modules
-
-| Module | Status | Notes |
-|--------|--------|-------|
-| `aether.governance` | shipped | Six agents plus the `GovernanceLayer` dispatcher |
-| `aether.contradiction` | shipped | Structural tension. Zero model calls. |
-| `aether.epistemics` | shipped | Belief backpropagation, trust evolution |
-| `aether.memory` | shipped | Slots, memory graph, BDG with cascade pressure |
-| `aether.mcp` | shipped (v0.6.0) | 14-tool MCP server: substrate-grounded sanction + fidelity, embedding-aware search, contradiction detection on write (structural + asymmetric-negation + policy + mutex), correction with BDG cascade, lineage, cascade preview, belief history, session diff, auto-ingest. |
-| `aether.cli` | shipped (v0.7.0) | `aether init / status / contradictions / check`. Pre-commit hook + GitHub Action ship as examples. Repo-aware: if a `.aether/state.json` is in the project tree, the MCP server and CLI discover it automatically. |
-| Claude Code plugin | shipped (v0.8.0) | One-command install via `claude plugin install`. Bundles MCP registration, auto-ingest Stop hook, SessionStart pip-install, and 7 slash commands (`/aether-status`, `/aether-search`, `/aether-check`, `/aether-init`, `/aether-contradictions`, `/aether-ingest`, `/aether-correct`). |
-| `aether.contradiction.mutex` | shipped (v0.6.0) | Class-based mutual-exclusion detector. Catches cases like AWS↔GCP, Postgres↔MySQL, npm↔pnpm where the structural meter misses because no slot extractor knows the domain. |
-| `aether.memory.auto_ingest` | shipped (v0.6.0) | Conservative regex extractor for high-signal facts (preferences, identity, project facts, decisions, constraints, corrections). Plus a sample Claude Code Stop hook in `examples/claude-code-hooks/`. |
-| `aether.adapters` | planned | Cross-vendor adapters so the substrate stays the same regardless of which LLM is the mouth |
-
-See [ROADMAP.md](ROADMAP.md) for what's coming and what's intentionally out of scope.
-
-## Where it fits next to other tools
+## Where it sits next to other tools
 
 | | Storage scope | Tracks contradiction | Belief/speech gap | Cross-vendor portable | Cascade pressure |
 |---|---|---|---|---|---|
 | Mem0, Letta, Zep, Cognee | memory layer | as overwrite | no | partial | no |
 | Microsoft Agent Governance Toolkit | runtime policy | no | no | yes | no |
 | Anthropic / OpenAI memory features | per-vendor | no | no | no | no |
-| Aether | belief substrate | first-class state (held / settling / settled) | measured by Law 5 | yes | yes |
+| Aether | belief substrate | first-class state | measured by Law 5 | yes | yes |
+
+## MCP tool surface
+
+The MCP server (`python -m aether.mcp`) exposes 14 tools. The differentiators:
+
+| Tool | What it does |
+|------|--------------|
+| `aether_sanction` | Pre-action gate. Auto-grounds in substrate. Force-rejects when a high-trust memory contradicts the action. |
+| `aether_fidelity` | Draft auditor. Computes belief_confidence from substrate grounding instead of accepting whatever the caller passed. |
+| `aether_lineage` | "Why do I believe this." Walks SUPPORTS edges back to source memories. |
+| `aether_cascade_preview` | Dry-run a correction. See blast radius before committing. |
+| `aether_correct` | Demote a memory's trust and cascade through SUPPORTS / DERIVED_FROM edges. |
+| `aether_session_diff` | What changed since a given timestamp. New memories, recent corrections, new contradictions. |
+
+Plus `aether_remember`, `aether_search`, `aether_memory_detail`, `aether_belief_history`, `aether_contradictions`, `aether_resolve`, `aether_context`, `aether_link`. State persists in `~/.aether/mcp_state.json`.
+
+The Claude Code plugin also ships seven slash commands: `/aether-status`, `/aether-search`, `/aether-check`, `/aether-init`, `/aether-contradictions`, `/aether-ingest`, `/aether-correct`.
+
+## Open-core split
+
+`aether-core` is MIT and free. Permanently. Every primitive in this repo (the six immune agents, the structural tension meter, belief backpropagation, the BDG with cascade pressure, the MCP server, the auto-ingest hook) stays open. The hosted Aether substrate (cross-account state, sanction governance API, audit dashboards, multi-user) is the paid product. That split is fixed and does not move backward.
 
 ## Design choices, briefly
 
 A contradiction is information, not a bug. Some are meant to stay open.
 
-Trust isn't assigned, it's earned. It moves under reinforcement, correction, and time.
+Trust is not assigned, it is earned. It moves under reinforcement, correction, and time.
 
 The belief/speech gap should be logged, not hidden. You want to see when the system says more than it knows, even if you choose not to act on it every time.
 
 The model is the mouth, not the self. The governance and the belief state should work the same regardless of which LLM is producing the words.
 
-Structure beats semantics for this kind of work. Slot comparison at 88 percent accuracy beats LLM-as-judge at 40 percent.
+Structure beats semantics for this kind of work. Slot comparison at 88 percent accuracy beats LLM-as-judge at 40 percent — that result was the design's origin.
 
 Cascade pressure can be measured. Belief revisions propagate through a graph with bounded depth and damping. There is real math under it; a paper is in flight.
 
@@ -268,6 +281,10 @@ Cascade pressure can be measured. Belief revisions propagate through a graph wit
 This grew out of running an assistant in production for a long time and watching the same problems come back. Continuity drift between sessions. Contradictions getting silently smoothed over. Trust on a fact climbing back up after the user corrected it twice. The structural tension meter came out of an experiment where removing the LLM from the belief-verification step roughly doubled accuracy, which was annoying and clarifying in equal measure.
 
 The architecture was originally called CRT (Contradiction-aware Reconciliation and Trust). It is now Aether, which is what it has always actually been.
+
+## Status and roadmap
+
+v0.12.8 (2026-04-30) closes all 10 known findings. The substrate is structurally complete: auto-ingest fires after every turn, the server picks up external writes on the next call, all read tools degrade gracefully on corrupt nodes, search is now trust-weighted. See [ROADMAP.md](ROADMAP.md) for what is coming and what is intentionally out of scope.
 
 ## License
 
