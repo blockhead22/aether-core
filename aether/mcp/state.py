@@ -281,6 +281,15 @@ def _is_policy_contradiction(
     new_prohibits = _looks_like_prohibition(new_text)
     new_imperative = _looks_like_imperative(new_text)
 
+    # Two prohibitions don't contradict each other — they're co-policies.
+    # A well-written prohibition that quotes the forbidden command (e.g.
+    # "Never force-push to main", "Never bypass commit hooks with --no-verify")
+    # will trip IMPERATIVE_CUES, but quoting a command isn't issuing one.
+    # Without this guard the asymmetric cue check below fires on
+    # prohibition-vs-prohibition pairs and seeds fake HELD contradictions.
+    if mem_prohibits and new_prohibits:
+        return False
+
     cues_align = (
         (mem_prohibits and new_imperative and not new_prohibits)
         or (mem_imperative and new_prohibits and not new_imperative)

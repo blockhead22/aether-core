@@ -272,6 +272,17 @@ def _format_version_drift_line() -> Optional[str]:
     latest = _check_pypi_version()
     if not latest or latest == installed:
         return None
+    # Only nudge if PyPI is actually ahead. Users running pip-installed-from-
+    # GitHub builds (or local dev installs) frequently have versions newer than
+    # the latest PyPI release; telling them to "upgrade" backwards is misleading.
+    try:
+        from packaging.version import Version
+        if Version(installed) >= Version(latest):
+            return None
+    except Exception:
+        # packaging not available or unparseable version — fall through and
+        # show the notice rather than silently swallow a real update.
+        pass
     return (
         f"  update available: aether-core {latest} on PyPI (you have {installed}). "
         f"upgrade: pip install -U 'aether-core[mcp,graph,ml]'"
@@ -744,6 +755,21 @@ def _doctor_claude_code_hook() -> dict:
             if p not in candidates:
                 candidates.append(p)
     candidates.append(Path.home() / ".claude" / "settings.json")
+    # Plugin-supplied hooks ship as hooks.json under the plugin cache /
+    # marketplace tree. Claude Code merges these at runtime when the plugin
+    # is enabled in ~/.claude/settings.json's `enabledPlugins`, so we have
+    # to look there too — otherwise doctor reports "no Stop hook found"
+    # while the hook is actively firing (which is exactly how aether-core
+    # itself ships its Stop hook).
+    plugins_root = Path.home() / ".claude" / "plugins"
+    for glob in (
+        "cache/*/*/*/hooks/hooks.json",
+        "marketplaces/*/plugins/*/hooks/hooks.json",
+        "marketplaces/*/*/hooks/hooks.json",
+    ):
+        for p in plugins_root.glob(glob):
+            if p not in candidates:
+                candidates.append(p)
     found = []
     for p in candidates:
         if not p.exists():
@@ -778,6 +804,19 @@ def _doctor_mcp_registration() -> dict:
         Path.cwd() / ".mcp.json",
         Path.home() / ".mcp.json",
     ]
+    # Plugin-bundled MCP server registrations live under the plugin tree.
+    # Same reasoning as the Stop-hook scan: Claude Code picks these up at
+    # runtime when the plugin is enabled, but doctor would otherwise miss
+    # them and false-warn about an unregistered server.
+    plugins_root = Path.home() / ".claude" / "plugins"
+    for glob in (
+        "cache/*/*/*/.mcp.json",
+        "marketplaces/*/plugins/*/.mcp.json",
+        "marketplaces/*/*/.mcp.json",
+    ):
+        for p in plugins_root.glob(glob):
+            if p not in candidates:
+                candidates.append(p)
     found = []
     for p in candidates:
         if not p.exists():
