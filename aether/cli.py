@@ -72,6 +72,95 @@ state_embeddings.npz
 """
 
 
+# F#11 (v0.12.13): default policy beliefs seeded on `aether init` so
+# `aether_sanction` has something to gate against from day one.
+# Without these, sanction returns APPROVE for "git push --force" /
+# "drop the production database" because F#4's policy contradiction
+# detection requires belief presence. Each belief is high-trust
+# (>=0.85 so the policy detector's strong-trust override fires).
+# Skip seeding via `aether init --no-defaults` — useful for tests
+# and for users who want a perfectly empty substrate.
+DEFAULT_POLICY_BELIEFS: list[dict] = [
+    # Source control safety
+    {
+        "text": "Never force-push to main or master branches.",
+        "trust": 0.95,
+        "source": "default_policy",
+    },
+    {
+        "text": "Never use git push --force without explicit team approval.",
+        "trust": 0.92,
+        "source": "default_policy",
+    },
+    {
+        "text": "Never bypass commit hooks with --no-verify unless explicitly authorized.",
+        "trust": 0.90,
+        "source": "default_policy",
+    },
+    # Production safety
+    {
+        "text": "Never drop production database tables or schemas.",
+        "trust": 0.95,
+        "source": "default_policy",
+    },
+    {
+        "text": "Never delete production data without verifying a recent backup.",
+        "trust": 0.92,
+        "source": "default_policy",
+    },
+    {
+        "text": "Never run database migrations on production without a dry-run review.",
+        "trust": 0.88,
+        "source": "default_policy",
+    },
+    # Destructive command safety
+    {
+        "text": "Never run rm -rf on a path without checking what it resolves to.",
+        "trust": 0.92,
+        "source": "default_policy",
+    },
+]
+
+
+def _seed_default_beliefs(state_path: Path) -> int:
+    """Populate a fresh substrate with DEFAULT_POLICY_BELIEFS.
+
+    Returns the count actually written. Uses StateStore so beliefs get
+    embeddings + slot tags + auto-link edges like any normal write.
+    Idempotent: if a belief's exact text is already present, it gets
+    skipped (deduplication via search at >=0.95 similarity).
+
+    Blocks for up to 60s on encoder warmup before writing. Without
+    this, the seeded memories go in without embeddings (the encoder
+    is still warming up at init time), leaving similarity=0 forever.
+    Sanction needs warm cosine to fire on policy contradictions.
+    """
+    try:
+        from aether.mcp.state import StateStore
+    except ImportError:
+        return 0
+    store = StateStore(state_path=str(state_path))
+    # Block for warmup so memories get real embeddings, not None.
+    if getattr(store, "_encoder", None) is not None and hasattr(
+        store._encoder, "wait_until_ready"
+    ):
+        store._encoder.wait_until_ready(timeout=60)
+    written = 0
+    for belief in DEFAULT_POLICY_BELIEFS:
+        existing = store.search(belief["text"], limit=1)
+        if existing and (existing[0].get("similarity") or 0.0) > 0.95:
+            continue
+        if existing and existing[0].get("substring_score", 0.0) >= 1.0:
+            continue
+        store.add_memory(
+            text=belief["text"],
+            trust=belief["trust"],
+            source=belief["source"],
+        )
+        written += 1
+    return written
+
+
 def cmd_init(args) -> int:
     target = Path(args.dir or os.getcwd()) / ".aether"
     if target.exists() and not args.force:
@@ -81,7 +170,8 @@ def cmd_init(args) -> int:
     target.mkdir(parents=True, exist_ok=True)
 
     state_file = target / "state.json"
-    if not state_file.exists() or args.force:
+    state_was_fresh = not state_file.exists() or args.force
+    if state_was_fresh:
         state_file.write_text(json.dumps({"nodes": [], "edges": []}, indent=2))
 
     history_file = target / "state_trust_history.json"
@@ -96,7 +186,19 @@ def cmd_init(args) -> int:
     if not gitignore.exists() or args.force:
         gitignore.write_text(GITIGNORE_LINES)
 
+    # F#11 (v0.12.13): seed default policy beliefs so aether_sanction
+    # has something to gate against immediately. Skip with --no-defaults.
+    seeded = 0
+    if state_was_fresh and not getattr(args, "no_defaults", False):
+        seeded = _seed_default_beliefs(state_file)
+
     print(f"initialized aether substrate at {target}")
+    if seeded:
+        print(
+            f"  + seeded {seeded} default policy beliefs "
+            "(force-push, --no-verify, prod safety, rm -rf)"
+        )
+        print("    skip with: aether init --no-defaults")
     print()
     print("Next steps:")
     try:
@@ -836,6 +938,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_init = sub.add_parser("init", help="create .aether/ in the current directory")
     p_init.add_argument("--dir", default=None, help="where to create .aether/")
     p_init.add_argument("--force", action="store_true", help="overwrite existing files")
+    p_init.add_argument("--no-defaults", action="store_true",
+                        help="skip seeding default policy beliefs (force-push, --no-verify, prod safety)")
     p_init.set_defaults(func=cmd_init)
 
     # status

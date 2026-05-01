@@ -91,8 +91,11 @@ class TestCLIInit:
         target = tmp_path / "newproj"
         target.mkdir()
 
+        # v0.12.13: pass --no-defaults so this test still snapshots the
+        # empty-substrate shape. The default-policy seeding is exercised
+        # in test_v1213_default_policy_beliefs.py.
         parser = build_parser()
-        args = parser.parse_args(["init", "--dir", str(target)])
+        args = parser.parse_args(["init", "--dir", str(target), "--no-defaults"])
         rc = args.func(args)
         assert rc == 0
 

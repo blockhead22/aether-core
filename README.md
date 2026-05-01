@@ -69,6 +69,12 @@ aether doctor
 #    MCP call doesn't pay the load cost. Surfaces install issues
 #    (HF Hub unreachable, [ml] extra missing) immediately.
 aether warmup
+
+# 5. (project-scoped) Seed a project-local substrate with default
+#    policy beliefs (force-push, --no-verify, prod safety) so
+#    aether_sanction has something to gate against from day one.
+#    Skip with --no-defaults.
+aether init
 ```
 
 In a Claude session:
