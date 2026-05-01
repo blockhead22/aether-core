@@ -125,9 +125,15 @@ Today's twelve-release marathon adds 5 fresh dogfood data points to the existing
 
 ## Open findings
 
-(All known findings closed as of v0.12.8.)
+### Open (surfaced 2026-04-30 by validation chapter test #1, deferred)
 
-### Closed this session
+The validation harness (`bench/validation_test1.py`) snapshotted substrate behavior against a 10-question battery. The first warm run surfaced three real findings:
+
+- **F#11 — sanction has no default policy beliefs.** `aether_sanction("git push --force origin main")` returns APPROVE on a fresh substrate because F#4's policy contradiction detection requires an explicit "never force-push" belief to be present. Same for "drop the production database." Fix candidates: (a) `aether init` seeds default policy beliefs (force-push, prod-db-drops, --no-verify, etc.), (b) sanction adds structural detection of high-risk language even without belief presence. Option (a) is simpler; option (b) is more general. Visible in the warm reference snapshot at `bench/results/validation_test1_2026-04-30_warm.md` categories C1 + C2.
+- **F#12 — trust-vs-verbosity ranking gap.** F#10's `SEARCH_TRUST_WEIGHT=0.7` keeps trust=0.67 demoted entries below trust=0.95 truths, but a trust=0.90 *short-text* entry can outrank a trust=0.95 *verbose-text* entry because cosine similarity to the bare query favors shorter text. Visible in category B2 of the warm snapshot: `user name: Jake` (trust=0.90) ranked above `user name: Nick (observed 65x in production)` (trust=0.95). Fix candidates: (a) re-embed imported nodes after stripping the "(observed Nx)" annotation suffix, (b) raise the trust weight slope. (a) is a one-time data migration; (b) has knock-on effects.
+- **F#13 — cold-query inject leak.** Library-level `compute_grounding` is correct (returns empty support+contradict for "capital of France" via the embedding floor in the meter), but the AI_round2 project-level inject hook (`.aether-hooks/inject_substrate_context.py`) uses a 0.15 score threshold that lets weak-similarity matches through (e.g. "user name: Claude" at score 0.158 for query "capital of France"). **Attempted v0.12.13 fix at the OSS layer: reverted** — adding a `GROUNDING_MIN_SIMILARITY=0.30` floor regressed the v0.9.3 methodological-overclaim test, because methodological signals also live at sim ~0.25. The right fix is at the inject layer (project-level), not the library layer. Approach: bump inject's min_score to 0.20 OR add `min_similarity=0.30` AND `min_score=0.15` in the inject filter only.
+
+### Closed earlier this session
 
 - **F#8 (FIXED v0.12.6 + v0.12.7):** `_LazyEncoder` warmup thread silently hung in MCP-subprocess context. Three-layer fix in v0.12.6 (HF env vars, redirect_stdout/stderr, widened except + diagnostic log). v0.12.7 found the deeper root cause was HF Hub's online connectivity check, not stdout — added force-offline-when-cached. Verified live 2026-04-30 evening: encoder warmed in ~18s, 127/129 substrate nodes have embeddings, doctor reports `[OK] encoder`.
 - **F#9 (FIXED v0.12.8):** trust didn't break ties in search ranking; trust=0 demoted entries leaked into the inject hook's LLM context. Subsumed by the F#10 fix below — both parts addressed.
@@ -190,4 +196,4 @@ aether doctor --report                             # markdown for GitHub issues
 
 ---
 
-*Today shipped twelve PyPI releases. The first eight closed all original findings (F#1–F#10) and made the substrate structurally complete. The last four (v0.12.9–v0.12.12) closed five prod-readiness hygiene gaps surfaced by an explicit "ready for real users" audit: opt-out env var, secret redaction, rotating backups + atomic write, one-paste bug-report bundle + GitHub issue template, and an `aether warmup` CLI for install-time encoder failures. Strategic context (OSS-as-main-focus) unchanged. The remaining gap is N>1 user validation — the only one that pure code cannot solve.*
+*Today shipped twelve PyPI releases. The first eight closed all original findings (F#1–F#10) and made the substrate structurally complete. The last four (v0.12.9–v0.12.12) closed five prod-readiness hygiene gaps surfaced by an explicit "ready for real users" audit: opt-out env var, secret redaction, rotating backups + atomic write, one-paste bug-report bundle + GitHub issue template, and an `aether warmup` CLI for install-time encoder failures. After that, validation chapter test #1 shipped (`bench/validation_test1.py`) and surfaced three new findings on first contact (F#11, F#12, F#13) — exactly the substrate-caught-itself loop the README promises. Strategic context (OSS-as-main-focus) unchanged. The remaining work: close F#11–F#13 next session and ship N>1 user validation — the only gap pure code cannot solve.*
