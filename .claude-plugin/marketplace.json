@@ -1,0 +1,22 @@
+{
+  "$schema": "https://anthropic.com/claude-code/marketplace.schema.json",
+  "name": "aether",
+  "description": "Marketplace for aether-core — belief substrate for AI agents. The model is the mouth, the substrate is the self.",
+  "owner": {
+    "name": "Nick Block",
+    "url": "https://github.com/blockhead22"
+  },
+  "plugins": [
+    {
+      "name": "aether-core",
+      "description": "Belief substrate for AI agents — persistent, contradiction-aware trust state that outlives any single model. Auto-ingest hook captures facts every turn; aether_sanction gates risky actions; aether_fidelity grades drafts against substrate grounding.",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/blockhead22/aether-core.git"
+      },
+      "homepage": "https://github.com/blockhead22/aether-core",
+      "license": "MIT",
+      "tags": ["belief-substrate", "memory", "contradiction", "governance", "epistemics", "trust", "cascade"]
+    }
+  ]
+}

@@ -52,10 +52,14 @@ pip install aether-core[all]
 
 ## Quickstart
 
-The substrate is most useful when wired into an MCP-speaking client. The fastest path is the Claude Code plugin — one command, no manual setup.
+The substrate is most useful when wired into an MCP-speaking client. The fastest path is the Claude Code plugin — two short commands, no manual setup beyond making sure `python` resolves to a 3.10+ interpreter (see Prerequisites below).
 
 ```bash
-claude plugin install github.com/blockhead22/aether-core
+# 1. Add this repo as a Claude Code marketplace
+claude plugin marketplace add blockhead22/aether-core
+
+# 2. Install the plugin from that marketplace
+claude plugin install aether-core@aether
 ```
 
 Restart Claude Code. The plugin's SessionStart hook does everything else on first run:
