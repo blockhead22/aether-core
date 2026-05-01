@@ -9,7 +9,7 @@ from aether.memory import extract_fact_slots, ExtractedFact, MemoryNode, BeliefD
 
 
 def test_package_version():
-    assert aether.__version__ == "0.12.20"
+    assert aether.__version__ == "0.12.21"
 
 
 def test_all_namespaces_have_real_exports():

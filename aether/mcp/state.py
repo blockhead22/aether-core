@@ -307,10 +307,19 @@ def _is_policy_contradiction(
 # Generic negation cues for asymmetric-negation contradiction detection.
 # When two highly-similar texts differ in negation polarity, that's a
 # strong contradiction signal even when no slot conflict is present.
+#
+# v0.12.21: dropped bare " un" — it was matching " until", " unique",
+# " unrelated", " under", etc., none of which are negations. The 2026-05-01
+# DECISIONS.md bench showed " un" (matching " until") was the dominant
+# false-positive driver in `_is_asymmetric_negation_contradict`. Replaced
+# with explicit un-prefix negation words.
 _NEGATION_CUES = (
     " not ", "n't ", " never ", " no ", " none ",
-    " neither ", " nor ", " without ", " un",  # un-prefix verbs
+    " neither ", " nor ", " without ",
     "not.", "not,", "n't.", "n't,",
+    # Explicit un-prefix negations (replacing the over-broad bare " un").
+    " unable", " unaware", " uncertain", " unwilling",
+    " unsure", " unclear", " unconvinced", " unlikely",
 )
 
 
@@ -319,28 +328,128 @@ def _has_negation(text: str) -> bool:
     return any(cue in t for cue in _NEGATION_CUES)
 
 
+# v0.12.21: selection-rejection cues. When BOTH sides of a pair contain
+# language indicating "this option was deferred / not chosen / set aside,"
+# they are *co-policies* describing complementary parts of one decision —
+# not contradicting facts. ("CRT did not pick Pinecone" + "CRT did not pick
+# FastAPI" are both real, both true, both about non-chosen alternatives.)
+# This is the same architectural shape as the v0.12.19 prohibition
+# co-policy guard in `_is_policy_contradiction`: matched-polarity pairs
+# don't contradict each other.
+_SELECTION_REJECTION_CUES = (
+    "did not pick", "did not choose", "did not select",
+    "not chosen", "not selected",
+    # Verb-form variants — "rejected" / "rejects" / "rejecting" all signal
+    # the same selection-rejection class.
+    "rejected", "rejects", "rejecting",
+    "deferred", "defers", "deferring",
+    "disabled", "disables", "disabling",
+    "set aside", "passed on", "passes on", "passing on",
+)
+
+
+def _expresses_selection_rejection(text: str) -> bool:
+    t = text.lower()
+    return any(cue in t for cue in _SELECTION_REJECTION_CUES)
+
+
+# v0.12.21: stop-word set for content-token overlap. Used by the
+# polarity-flip guard in compute_grounding to require domain alignment
+# before flipping a "compatible" classification to a contradiction.
+# Includes function words and the negation cues themselves (we want to
+# compare *content*, not co-presence of prohibition language).
+_CONTENT_OVERLAP_STOPWORDS = frozenset({
+    "the", "a", "an", "is", "are", "was", "were", "be", "to", "of",
+    "in", "on", "at", "by", "for", "with", "from", "as", "and", "or",
+    "but", "this", "that", "these", "those", "it", "its",
+    "i", "we", "you", "they", "their", "his", "her",
+    "do", "does", "did", "don", "doesn",
+    "never", "no", "not", "never.", "no.", "not.",
+})
+
+
+def _content_token_overlap(text_a: str, text_b: str) -> float:
+    """Fraction of text_a's content tokens that appear in text_b.
+
+    Used to gate the polarity-flip guard in compute_grounding: the
+    guard should only fire when the action and the prohibition belief
+    share enough domain content. "git status" vs "Never use git push
+    --force" overlap only on `git` (1/8 ≈ 0.13) — too thin. "delete
+    X without backing up" vs "Never delete prod data without backup"
+    overlaps on `delete`/`without`/`backup` substrings — strong enough.
+    """
+    import re
+    def tokens(s):
+        return {
+            t for t in re.findall(r"\b[a-z][a-z0-9_-]+\b", s.lower())
+            if t not in _CONTENT_OVERLAP_STOPWORDS and len(t) >= 3
+        }
+    a, b = tokens(text_a), tokens(text_b)
+    if not a:
+        return 0.0
+    # Stem-tolerant overlap: a token in `a` matches `b` if any token in
+    # `b` shares a 4+ char prefix. Keeps "backup" / "backing" aligned,
+    # "tables" / "table" aligned, without pulling in heavy stemming deps.
+    matched = 0
+    for ta in a:
+        for tb in b:
+            if ta == tb or (len(ta) >= 4 and len(tb) >= 4 and (
+                ta[:4] == tb[:4] and (ta.startswith(tb) or tb.startswith(ta))
+            )):
+                matched += 1
+                break
+    return matched / len(a)
+
+
+# v0.12.21: asymm_neg gets its own (higher) similarity threshold.
+# At the policy threshold (0.45) co-topical-but-different-fact pairs slip
+# through because their negation polarity happens to differ. Real
+# asymmetric negation ("We use pnpm" vs "We use npm not pnpm") has
+# similarity > 0.85 because the texts are near-paraphrases. The 2026-05-01
+# DECISIONS.md bench showed that cross-domain pairs ("uses Flask" vs
+# "did not pick Pinecone") fire below 0.75 — so we draw the line there.
+ASYMM_NEG_MIN_SIMILARITY = 0.75
+
+
 def _is_asymmetric_negation_contradict(
     text_a: str,
     text_b: str,
     similarity: float,
-    min_similarity: float = POLICY_CONTRA_MIN_SIMILARITY,
+    min_similarity: float = ASYMM_NEG_MIN_SIMILARITY,
 ) -> bool:
     """Two highly-similar texts where exactly one contains negation cues.
 
     Catches cases the StructuralTensionMeter misses:
         "We use pnpm not npm" vs "We use npm"
         "Main is protected, never force push" vs "Force push to main"
-        "Main is protected, never force push" vs "Force push to main"
 
-    Not perfect (won't catch double-negation, semantic flips like
-    'increased' vs 'decreased', or rephrased prohibitions), but cheap
-    and high-precision for the common case.
+    v0.12.21: returns False when both sides express selection-rejection
+    (deferred/rejected/disabled/not chosen). Two co-policies about
+    different non-chosen alternatives are not in conflict — they are
+    parts of the same compound decision. The 2026-05-01 reflexive bench
+    on a real DECISIONS.md showed this case dominated the false positives.
+
+    v0.12.21: similarity threshold raised to 0.75 (was 0.45 inherited
+    from POLICY_CONTRA_MIN_SIMILARITY). Real asymmetric negation requires
+    near-paraphrase similarity; co-topical-but-different-fact pairs were
+    firing below 0.75 in the bench.
+
+    Still not perfect (won't catch double-negation, semantic flips like
+    'increased' vs 'decreased', or the "uses A" vs "did not pick B" case
+    where A and B are co-options in a closed set — that needs slot-key
+    canonicalization, scheduled for v0.13).
     """
     if similarity < min_similarity:
         return False
     a_neg = _has_negation(text_a)
     b_neg = _has_negation(text_b)
-    return a_neg != b_neg
+    if a_neg == b_neg:
+        return False
+    # Co-rejection guard: if both sides describe a non-chosen / deferred
+    # alternative, they are co-policies, not contradictions.
+    if _expresses_selection_rejection(text_a) and _expresses_selection_rejection(text_b):
+        return False
+    return True
 
 
 def _find_repo_state(start_dir: Optional[str] = None) -> Optional[str]:
@@ -1401,6 +1510,40 @@ class StateStore:
                 TensionRelationship.REFINEMENT,
                 TensionRelationship.COMPATIBLE,
             ):
+                # v0.12.21: polarity-flip guard. The tension meter's
+                # relationship classifier is polarity-blind on high-token-
+                # overlap pairs. When the candidate is a high-trust
+                # prohibition belief and the query lacks prohibition language
+                # AND the action shares enough content with the prohibition
+                # to be in the same domain, "compatible" is the wrong call —
+                # the belief forbids the kind of action the query proposes.
+                # Reclassify as contradict.
+                #
+                # Catches the 2026-05-01 sanction bench case:
+                #   memory: "Never delete production data without verifying
+                #            a recent backup." (trust 0.92)
+                #   action: "delete secure_memory/faiss.index without backing
+                #            it up"
+                # The meter saw shared tokens (delete, without, backup) and
+                # called them compatible. They are not.
+                #
+                # The 0.25 content-overlap floor avoids false-flipping cases
+                # where the action only shares an incidental prefix word
+                # with the prohibition (e.g. "git status" vs "Never use git
+                # push --force" overlaps only on `git`, ratio 0.13).
+                POLARITY_FLIP_OVERLAP_MIN = 0.25
+                if (
+                    hit["trust"] >= POLICY_CONTRA_MIN_TRUST
+                    and _looks_like_prohibition(hit["text"])
+                    and not _looks_like_prohibition(text)
+                    and _content_token_overlap(hit["text"], text) >= POLARITY_FLIP_OVERLAP_MIN
+                ):
+                    contradict.append({
+                        **hit,
+                        "tension_score": round(tr.tension_score, 3),
+                        "kind": "polarity_flip",
+                    })
+                    continue
                 support.append({**hit, "tension_score": round(tr.tension_score, 3)})
                 weights.append(hit["trust"])
 
