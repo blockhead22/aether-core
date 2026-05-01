@@ -1659,6 +1659,28 @@ def extract_fact_slots(text: str) -> Dict[str, ExtractedFact]:
                 "project_framework", fw, fw
             )
 
+    # v0.13.1 Phase B: project chosen option (capital-letter option
+    # labels in decision prose). Catches Test #3 Case B from the
+    # 2026-05-01 reflexive bench — paraphrased decision drift across
+    # natural prose.
+    # Examples:
+    #   "CRT picked Option A"           → project_chosen_option=A
+    #   "we pivoted to Option B"        → project_chosen_option=B
+    #   "the team went with Option C"   → project_chosen_option=C
+    if "project_chosen_option" not in facts:
+        _chosen_option_pat = re.compile(
+            r"\b(?:[A-Z][A-Za-z0-9_-]{1,30}|the (?:project|repo|codebase|team|app)|we|i)\s+"
+            r"(?:picked|chose|went with|pivoted to|selected|decided on|opted for)\s+"
+            r"(?:the\s+)?Option\s+([A-Z])\b",
+            re.IGNORECASE,
+        )
+        m = _chosen_option_pat.search(text)
+        if m:
+            opt = m.group(1).strip().upper()
+            facts["project_chosen_option"] = ExtractedFact(
+                "project_chosen_option", opt, opt
+            )
+
     # Strip name/assistant_name if auto-extraction is disabled.
     # Names should come from auth.display_name, not conversation inference.
     if not _EXTRACT_NAMES_FROM_CONVERSATION:
