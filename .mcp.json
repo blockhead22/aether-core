@@ -1,8 +1,12 @@
 {
   "mcpServers": {
     "aether": {
-      "command": "python",
-      "args": ["-m", "aether.mcp"]
+      "command": "python3",
+      "args": [
+        "${CLAUDE_PLUGIN_ROOT}/hooks/aether_launcher.py",
+        "-m",
+        "aether.mcp"
+      ]
     }
   }
 }

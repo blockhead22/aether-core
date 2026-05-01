@@ -36,6 +36,7 @@ import sys
 import time
 import traceback
 from pathlib import Path
+from typing import List, Optional
 
 
 def _log_path() -> Path:
@@ -89,58 +90,180 @@ def _version_tuple(v: str) -> tuple:
     return tuple(parts)
 
 
-def _pip_install(upgrade: bool) -> bool:
-    cmd = [sys.executable, "-m", "pip", "install", "--quiet"]
+_LAST_PIP_STDERR = ""  # populated by _pip_install on failure
+
+
+def _pip_install(python_path: str, upgrade: bool) -> bool:
+    """Run pip install of aether-core[mcp,graph,ml] under the given Python.
+
+    Captures stderr so the caller can detect PEP 668 (Homebrew /
+    Debian externally-managed Python) and fall back to a venv. Logs
+    the LAST 800 chars of stderr on failure — previously the hook
+    swallowed the actual pip error message and only logged the
+    Python exception type, which made remote diagnosis impossible.
+    """
+    global _LAST_PIP_STDERR
+    cmd = [python_path, "-m", "pip", "install", "--quiet"]
     if upgrade:
         cmd.append("--upgrade")
     cmd.append("aether-core[mcp,graph,ml]")
     try:
-        subprocess.run(cmd, check=True, timeout=180)
-        return True
+        result = subprocess.run(
+            cmd, capture_output=True, text=True, timeout=180,
+        )
+        _LAST_PIP_STDERR = result.stderr or ""
+        if result.returncode == 0:
+            return True
+        _log(
+            f"INSTALL  pip rc={result.returncode} stderr_tail={_LAST_PIP_STDERR[-800:]}"
+        )
+        return False
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-        _log(f"INSTALL  pip failed: {type(e).__name__}: {e}")
+        _LAST_PIP_STDERR = str(e)
+        _log(f"INSTALL  pip exception: {type(e).__name__}: {e}")
         return False
 
 
+def _is_pep668_error() -> bool:
+    """Heuristic: pip stderr indicates an externally-managed Python."""
+    return "externally-managed-environment" in _LAST_PIP_STDERR.lower()
+
+
+def _venv_python(venv_dir: Path) -> Path:
+    if sys.platform == "win32":
+        return venv_dir / "Scripts" / "python.exe"
+    return venv_dir / "bin" / "python"
+
+
+def _create_venv_and_install(venv_dir: Path) -> Optional[str]:
+    """PEP 668 fallback: build a venv at venv_dir, install aether into it.
+
+    Returns the venv's python path on success, None on failure.
+    """
+    try:
+        subprocess.run(
+            [sys.executable, "-m", "venv", str(venv_dir)],
+            check=True,
+            capture_output=True,
+            timeout=120,
+        )
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+        _log(f"VENV     creation at {venv_dir} failed: {type(e).__name__}: {e}")
+        return None
+    venv_py = _venv_python(venv_dir)
+    if not venv_py.exists():
+        _log(f"VENV     created but {venv_py} not found")
+        return None
+    if not _pip_install(str(venv_py), upgrade=False):
+        _log(f"VENV     pip install into {venv_dir} failed")
+        return None
+    _log(f"VENV     ready at {venv_dir}")
+    return str(venv_py)
+
+
+def _maybe_reexec_via_aether_python() -> None:
+    """If aether is importable in a venv we recognize but NOT in the current
+    Python, re-exec self via that venv's Python so the rest of the script
+    sees aether. Returns silently when no re-exec is needed; never returns
+    when re-exec succeeds.
+
+    Discovery mirrors hooks/aether_launcher.py.
+    """
+    # If aether is already importable here, no re-exec needed.
+    try:
+        import importlib.util
+        if importlib.util.find_spec("aether") is not None:
+            return
+    except Exception:
+        pass
+
+    # Try discovery in the same order as the launcher.
+    candidates: List[Path] = []
+    explicit = os.environ.get("AETHER_PYTHON", "").strip()
+    if explicit:
+        candidates.append(Path(explicit))
+    home = Path.home()
+    candidates.append(_venv_python(home / ".aether-venv"))
+    candidates.append(_venv_python(home / "aether-venv"))
+    active = os.environ.get("VIRTUAL_ENV", "").strip()
+    if active:
+        candidates.append(_venv_python(Path(active)))
+
+    for py in candidates:
+        if not py.exists():
+            continue
+        try:
+            r = subprocess.run(
+                [str(py), "-c", "import aether"],
+                capture_output=True, timeout=10,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if r.returncode == 0:
+            _log(f"REEXEC   self via {py}")
+            try:
+                os.execvp(str(py), [str(py), __file__])
+            except OSError as e:
+                _log(f"REEXEC   execvp failed: {e}; continuing in current Python")
+                return
+    # No working alternative — caller continues in current Python.
+
+
 def _ensure_installed() -> bool:
-    """Pip-install or upgrade aether-core[mcp,graph,ml].
+    """Ensure aether-core is importable.
 
-    Three cases:
-      1. Not importable — fresh install via pip.
-      2. Importable but version < _REQUIRED_VERSION — pip --upgrade.
-      3. Already up to date — no-op.
-
-    Returns True if aether is importable + at floor after this call.
+    Order of operations:
+      1. If already importable + at version floor — done.
+      2. If importable but old — pip --upgrade in current Python.
+      3. If not importable — pip install in current Python.
+      4. If pip install hits PEP 668 — create ~/.aether-venv and
+         re-exec self via that Python (this call doesn't return).
+      5. Any other failure — log loudly + return False so the caller
+         can emit empty context (never block Claude).
     """
     try:
         import importlib.util
-        if importlib.util.find_spec("aether") is None:
-            _log("INSTALL  aether not importable, running pip install")
-            if not _pip_install(upgrade=False):
-                return False
-            return True
+        already = importlib.util.find_spec("aether") is not None
     except Exception:
+        already = False
+
+    if not already:
+        _log("INSTALL  aether not importable, running pip install")
+        if _pip_install(sys.executable, upgrade=False):
+            return True
+        if _is_pep668_error():
+            venv = Path.home() / ".aether-venv"
+            _log(f"INSTALL  PEP 668 detected, falling back to venv at {venv}")
+            venv_py = _create_venv_and_install(venv)
+            if venv_py:
+                _log(f"INSTALL  re-execing self via {venv_py}")
+                try:
+                    os.execvp(venv_py, [venv_py, __file__])
+                except OSError as e:
+                    _log(f"INSTALL  execvp into venv failed: {e}")
+                    return False
+            return False
         return False
 
     # Already importable — check the version.
     try:
-        # Fresh import in case a previous import cached a stale module.
         import importlib
         import aether
         importlib.reload(aether)
         installed = getattr(aether, "__version__", "0.0.0")
     except Exception as e:
         _log(f"INSTALL  could not read aether.__version__: {e}")
-        return True  # don't fail-stop on a cosmetic issue
+        return True  # cosmetic, don't fail
 
     if _version_tuple(installed) < _version_tuple(_REQUIRED_VERSION):
         _log(
             f"INSTALL  aether {installed} < required {_REQUIRED_VERSION}, "
             f"running pip --upgrade"
         )
-        if not _pip_install(upgrade=True):
-            return False
-        # After upgrade, force a re-import so the hook uses the new code.
+        if not _pip_install(sys.executable, upgrade=True):
+            # PEP 668 on upgrade is rare (user already had aether installed
+            # somehow) but possible. Log and proceed with the older version.
+            _log("INSTALL  upgrade failed; continuing with installed version")
         try:
             import importlib
             import aether
@@ -263,7 +386,15 @@ def main() -> int:
     except Exception:
         pass
 
-    # 1. Ensure aether is installed.
+    # 0. If we're running in a Python without aether but a known venv
+    #    (~/.aether-venv, $VIRTUAL_ENV, $AETHER_PYTHON) does have it,
+    #    re-exec there. Avoids re-running pip-install on every session
+    #    start when the user already has a working venv from a prior
+    #    bootstrap. Never returns when re-exec succeeds.
+    _maybe_reexec_via_aether_python()
+
+    # 1. Ensure aether is installed. Falls back to creating a venv if
+    #    pip hits PEP 668 (Homebrew / managed Python).
     if not _ensure_installed():
         _log("FATAL    aether could not be installed; emitting empty context")
         _emit("")

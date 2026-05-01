@@ -108,6 +108,13 @@ sudo ln -s "$(which python3)" /usr/local/bin/python
 
 **Windows:** typically nothing to do — modern Python installers create both `python.exe` and `python3.exe`.
 
+**Working in a venv (PEP 668 / Homebrew / Debian).** If your `python3` is externally-managed (Homebrew Python 3.11+, recent Debian/Ubuntu), `pip install aether-core` will refuse with `error: externally-managed-environment`. v0.12.18+ handles this two ways:
+
+1. **Auto-fallback.** The plugin's SessionStart hook detects PEP 668 from pip's stderr and creates `~/.aether-venv/` automatically, installing aether there. No action from you.
+2. **Manual venv** with `AETHER_PYTHON` override. If you already have aether installed in a custom location, set `AETHER_PYTHON=/path/to/that/venv/bin/python` in your shell rc. The plugin's launcher (`hooks/aether_launcher.py`) trusts this and uses your interpreter directly.
+
+The launcher's discovery order is: `$AETHER_PYTHON` → `~/.aether-venv/bin/python` → `~/aether-venv/bin/python` → `$VIRTUAL_ENV/bin/python` → the launcher's own interpreter. First match wins.
+
 **Sanity test after install:** ask Claude to run `git push --force origin main`. With aether active, `aether_sanction` should return HOLD/REJECT against the seeded "Never force-push" belief instead of approving.
 
 **If the install seems to do nothing:**
