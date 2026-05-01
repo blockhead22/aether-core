@@ -569,6 +569,97 @@ def build_server(store: Optional[StateStore] = None) -> FastMCP:
         """Dashboard snapshot of the current substrate state."""
         return store.stats()
 
+    @mcp.tool()
+    def aether_bootstrap() -> dict:
+        """Idempotent first-run setup for clients without SessionStart hooks
+        (Claude Desktop, Cursor, anything that's not Claude Code).
+
+        Performs three things, each a no-op if already done:
+
+        1. Seeds 7 default policy beliefs (force-push, --no-verify,
+           production data safety, rm -rf) so aether_sanction has
+           something to gate against. Skipped if any source:default_policy
+           memory already exists.
+        2. Triggers encoder warmup in the background so the first
+           cosine search runs warm. Returns the encoder state at the
+           moment of this call ('warm' / 'warming' / 'cold' / 'unavailable').
+        3. Reports current substrate stats (memory count, contradictions,
+           encoder mode, version).
+
+        Call this once after installing aether-core in a non-Claude-Code
+        client. Subsequent calls are cheap and informative — useful for
+        confirming aether is wired up at the start of a fresh conversation.
+        """
+        from aether.cli import DEFAULT_POLICY_BELIEFS
+
+        # Step 1: seed defaults if absent.
+        seeded = 0
+        existing_default = False
+        for node in store.graph.all_memories():
+            if any(
+                isinstance(t, str) and t.startswith("source:default_policy")
+                for t in (node.tags or [])
+            ):
+                existing_default = True
+                break
+        if not existing_default:
+            # Block briefly on encoder warmup so seeded memories get embeddings.
+            if (
+                getattr(store, "_encoder", None) is not None
+                and hasattr(store._encoder, "wait_until_ready")
+            ):
+                try:
+                    store._encoder.wait_until_ready(timeout=60)
+                except Exception:
+                    pass
+            for belief in DEFAULT_POLICY_BELIEFS:
+                store.add_memory(
+                    text=belief["text"],
+                    trust=belief["trust"],
+                    source=belief["source"],
+                )
+                seeded += 1
+
+        # Step 2: ensure warmup is at least started.
+        encoder_mode = "unavailable"
+        if getattr(store, "_encoder", None) is not None:
+            try:
+                if hasattr(store._encoder, "start_warmup"):
+                    store._encoder.start_warmup()
+            except Exception:
+                pass
+            stats = store.stats()
+            if stats.get("embeddings_loaded"):
+                encoder_mode = "warm"
+            elif stats.get("embeddings_warming"):
+                encoder_mode = "warming"
+            else:
+                encoder_mode = "cold"
+
+        # Step 3: stats.
+        stats = store.stats()
+        try:
+            from aether import __version__ as _ver
+        except ImportError:
+            _ver = "unknown"
+
+        return {
+            "aether_version": _ver,
+            "seeded_default_beliefs": seeded,
+            "default_beliefs_already_present": existing_default,
+            "encoder_mode": encoder_mode,
+            "memory_count": stats.get("memory_count", 0),
+            "edge_count": stats.get("edge_count", 0),
+            "held_contradictions": stats.get("held_contradictions", 0),
+            "state_path": stats.get("state_path"),
+            "next_steps": (
+                "aether is ready. The model can call aether_remember to store "
+                "facts, aether_search to recall, aether_sanction to gate "
+                "actions, aether_fidelity to grade drafts. State persists at "
+                f"{stats.get('state_path')}."
+            ),
+        }
+
     return mcp
 
 

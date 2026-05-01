@@ -144,15 +144,60 @@ aether uninstall-cleanup --keep-substrate  # remove logs / caches; preserve memo
 aether uninstall-cleanup --yes             # remove ~/.aether/ entirely
 ```
 
-### Manual install (any MCP client)
+### Claude Desktop (the Mac / Windows app)
 
-If you use Cursor, Cline, Continue, Goose, Zed, LM Studio, or anything else that speaks MCP:
+Claude Desktop speaks MCP but doesn't have the plugin or hook system Claude Code does — so the SessionStart auto-everything from the Quickstart doesn't run. The substrate still works, the user just has to do the install manually and call `aether_bootstrap` once from inside a conversation.
+
+```bash
+# 1. Same Python prerequisite (3.10+) — see Prerequisites above for setup
+pip install "aether-core[mcp,graph,ml]"
+
+# 2. Wire aether into Claude Desktop's MCP config.
+#    Path: ~/Library/Application Support/Claude/claude_desktop_config.json (macOS)
+#          %APPDATA%\Claude\claude_desktop_config.json                    (Windows)
+mkdir -p ~/Library/Application\ Support/Claude
+cat > ~/Library/Application\ Support/Claude/claude_desktop_config.json <<'EOF'
+{
+  "mcpServers": {
+    "aether": {
+      "command": "python",
+      "args": ["-m", "aether.mcp"]
+    }
+  }
+}
+EOF
+
+# 3. Quit Claude Desktop entirely (Cmd-Q on macOS) and relaunch.
+```
+
+In your first conversation:
+
+> Set up aether for me — call `aether_bootstrap`.
+
+That tool is idempotent. It seeds the 7 default policy beliefs, kicks off encoder warmup, and reports the substrate state. After that, Claude can call `aether_remember`, `aether_search`, `aether_sanction`, `aether_fidelity`, etc. just like in Claude Code.
+
+**What's different on Desktop vs Code:**
+
+| | Claude Code | Claude Desktop |
+|---|---|---|
+| MCP tools (the substrate API) | ✅ | ✅ |
+| Persistent substrate at `~/.aether/mcp_state.json` | ✅ | ✅ |
+| Auto-ingest (facts captured every turn without asking) | ✅ via Stop hook | ❌ — say "remember X" explicitly |
+| First-run welcome / version-drift notice in conversation | ✅ via SessionStart | ❌ — `aether status` from terminal |
+| Auto-pip-install / auto-upgrade | ✅ via SessionStart | ❌ — manual `pip install -U` |
+| Slash commands (`/aether-status` etc.) | ✅ | ❌ — these are CLI-only |
+
+The MCP tool surface is the substrate's actual API, so Desktop *works*. It's just that the "fills on its own" magic is only on the CLI side. If you want auto-ingest in Desktop too, that's a feature request to Anthropic — Desktop needs a hook system for it.
+
+### Manual install (other MCP clients)
+
+For Cursor, Cline, Continue, Goose, Zed, LM Studio, or anything else that speaks MCP, the same pattern applies:
 
 ```bash
 pip install "aether-core[mcp,graph]"
 ```
 
-Add to your client's MCP config:
+Add to your client's MCP config (consult the client's docs for the path):
 
 ```json
 {
@@ -164,6 +209,8 @@ Add to your client's MCP config:
   }
 }
 ```
+
+Then ask the agent to `aether_bootstrap` once on first use.
 
 ### Have your AI install it for you
 
