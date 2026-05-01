@@ -21,7 +21,7 @@ Anthropic published [Emotion Concepts and their Function in a Large Language Mod
 
 A study in Science (April 2026, N=1,604) found that one conversation with a frontier LLM made participants 50 percent more likely to affirm harmful behavior. The effect was invisible to text-level review. Only 21 percent of enterprises deploying agentic AI said they had a mature governance model.
 
-Aether answers a different question from "is this allowed." It answers: *does the agent's belief state actually support what it is about to say or do?* The belief/speech gap that Anthropic just named is what Law 5 of the governance layer (`GapAuditor`) has measured since the first commit.
+Aether answers a different question from "is this allowed." It answers: *does the agent's belief state actually support what it is about to say or do?* Law 5 of the governance layer (`GapAuditor`) measures a structural version of this belief/speech gap — comparing a draft response's expressed confidence against the substrate's grounding. Anthropic's paper measures the underlying phenomenon at the activation level via mechanistic interpretability; aether measures it at the input/output boundary. Same name, different layers — the structural measure is much cheaper but conceptually downstream of the activation one. Whether the two correlate is an open empirical question, not something the library has demonstrated yet.
 
 ## What this catches that other tools don't
 
@@ -403,7 +403,7 @@ The belief/speech gap should be logged, not hidden. You want to see when the sys
 
 The model is the mouth, not the self. The governance and the belief state should work the same regardless of which LLM is producing the words.
 
-Structure beats semantics for this kind of work. Slot comparison at 88 percent accuracy beats LLM-as-judge at 40 percent — that result was the design's origin.
+Structure beats semantics for this kind of contradiction work, in the author's experience: slot comparison is markedly more reliable than LLM-as-judge on canonical conflicts (Seattle vs Portland, AWS vs GCP, Python 3.10 vs 3.8). The original informal experiment that produced this conviction has not been written up reproducibly — a published comparison vs LLM-as-judge on a fixed corpus is on the validation roadmap, not in the repo today. Take the design preference as a hypothesis the bench is *consistent with*, not a measured result the library *proves*.
 
 Cascade pressure can be measured. Belief revisions propagate through a graph with bounded depth and damping. There is real math under it; a paper is in flight.
 

@@ -40,8 +40,10 @@ Goal: aether has at least one published benchmark number that wasn't authored by
 1. **Run [EQL-Bench](https://github.com/Lakshmi-Chakradhar-Vijayarao/credence-ai/tree/main/evals) against aether.** Their `evals/compression_faithfulness.py` (~$3, n=50) tests qualifier preservation through compression. Direct overlap with aether's `GapAuditor` (Law 5). Even a mediocre score is the first non-dogfood number.
 2. **Cross-reference marker libraries** with Credence (MIT). Diff their HEDGING / ANCHORS / SELF_CORRECTIONS lexicons against aether's `template_detector.py`. Either import what's missing or document why aether deliberately doesn't.
 3. **Add no-substrate baseline** to `bench/validation_test1.py`. Same questions, empty StateStore. The diff is the substrate's measurable value-add.
-4. **Close F#12 / F#13** only if EQL-Bench surfaces them as material; otherwise defer.
-5. **Add semantic entropy** (Kuhn et al., Nature 2024). Aether is structural-only today; entropy gives a *model-internal* uncertainty signal aether can't see. ~100-200 lines.
+4. **Reproduce the 88%-vs-40% claim** (or retract it). The README's "structure beats semantics" line cited this number for a long time without a reproducible experiment behind it. Build the experiment: a fixed corpus of contradiction-detection cases, run aether's structural meter, run GPT-4 / Claude as a judge on the same cases, publish the comparison. v0.12.16 hedged the claim in the README; a real measurement closes the loop.
+5. **Close F#12 / F#13** only if EQL-Bench surfaces them as material; otherwise defer.
+6. **Add semantic entropy** (Kuhn et al., Nature 2024). Aether is structural-only today; entropy gives a *model-internal* uncertainty signal aether can't see. ~100-200 lines.
+7. **Real install smoke test in CI.** v0.12.16 shipped because no test exercised the actual `claude plugin install` flow — the marketplace.json absence and the author-field schema bug both made it through. Add a CI job that installs the plugin from a fresh marketplace add, runs SessionStart, and asserts `aether doctor` returns 7 OK. Without this, the next plugin-schema regression will silently break layman onboarding for everyone.
 
 **Done criteria.** A README badge or numbers section pointing at a non-self-authored benchmark with aether's score on it.
 
