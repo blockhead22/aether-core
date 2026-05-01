@@ -1,6 +1,6 @@
 {
   "name": "aether-core",
-  "version": "0.12.16",
+  "version": "0.12.17",
   "description": "Belief substrate for AI agents — persistent, contradiction-aware trust state that outlives any single model. The model is the mouth, the substrate is the self.",
   "author": {
     "name": "Nick Block",
