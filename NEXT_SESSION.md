@@ -2,9 +2,9 @@
 
 ## Where we are
 
-`aether-core` is at **v0.12.5** on origin master, commit `ad27f1b`, **published live on PyPI as the latest version**. **361+ tests pass**, zero xfail, CI green on master.
+`aether-core` is at **v0.12.8** on origin master, commit pending. **362+ tests pass**, zero xfail, CI green on master.
 
-Today (2026-04-30) shipped **five PyPI releases** in one day, each fixing or hardening a real finding the substrate-assisted dev loop surfaced:
+Today (2026-04-30) shipped **eight PyPI releases** total, each fixing or hardening a real finding the substrate-assisted dev loop surfaced:
 
 | Version | What | Findings closed |
 |---|---|---|
@@ -13,12 +13,15 @@ Today (2026-04-30) shipped **five PyPI releases** in one day, each fixing or har
 | 0.12.3 | F#7 fix — StateStore syncs from disk on external writes; auto-ingest hook writes survive server saves | F#7 |
 | 0.12.4 | `aether doctor` diagnostic command — six checks (imports, state file, activity, encoder, hook, mcp registration) that surface silent breakage in seconds | (catches future F#1-style bugs) |
 | 0.12.5 | F#3 fix — `MemoryGraph.get_memory()` catches deserialization errors; read tools degrade to "unknown memory_id" instead of crashing on corrupt nodes | F#3 |
+| 0.12.6 | F#8 fix — encoder warmup no longer hangs in MCP subprocess (HF env vars + redirect_stdout/stderr around SentenceTransformer init + diagnostic log) | F#8 |
+| 0.12.7 | F#8 layer 1.5 — root cause was HF online check, not stdout; force offline mode when model is cached | (F#8 hardening) |
+| 0.12.8 | F#9 + F#10 fix — search() weights combined score by trust; inject_substrate_context filters trust=0 entries | F#9, F#10 |
 
 E2E harness expanded from turns 1-2 → turns 1-10 (full scripted scenario). 9 full_loop tests + 4 smoke tests, all passing.
 
 The auto-ingest Stop hook was fixed to actually read `transcript_path` (had been a silent no-op for 3 days because Claude Code sends a path, not inline messages). Hook now fires every turn and writes high-trust facts to the substrate. The substrate grew from 38 → 41+ memories during the session as a direct consequence.
 
-### Findings status (all 7 closed)
+### Findings status (all 10 closed)
 
 | ID | Description | Disposition |
 |---|---|---|
@@ -29,6 +32,9 @@ The auto-ingest Stop hook was fixed to actually read `transcript_path` (had been
 | F#5 | `aether_link("supports")` doesn't override existing `related_to` | Closed — test-author error in turn-8 e2e, not a bug |
 | F#6 | Auto-link sim threshold leaves dissimilar facts disconnected | Closed — expected behavior, threshold is tunable |
 | F#7 | Stop hook + MCP server share state file with no coordination → server clobbers hook writes | Fixed v0.12.3 |
+| F#8 | `_LazyEncoder` warmup hangs in MCP subprocess (HF online check, stdio bleed) | Fixed v0.12.6 + v0.12.7 |
+| F#9 | search() doesn't tiebreak by trust; inject hook doesn't filter trust=0 | Fixed v0.12.8 (subsumed by F#10) |
+| F#10 | Cosine actively anti-ranks high-trust truths when annotation suffixes dilute their embedding (no trust term in score) | Fixed v0.12.8 |
 
 ## Strategic state
 
@@ -101,8 +107,13 @@ Production CRT layers have `user.name` slots; OSS extractor returns empty for "M
 
 ## Open findings
 
-- **F#8 (FIXED v0.12.6):** `_LazyEncoder` warmup thread silently hung in MCP-subprocess context. Root cause confirmed via diagnostic logging: `SentenceTransformer.__init__` writes ~350 bytes of warnings/progress to stderr, which corrupted the parent's MCP stdio stream and stalled the warmup thread on a backed-up pipe write. Three-layer fix: (1) HF env vars at module load (TRANSFORMERS_VERBOSITY=error, HF_HUB_DISABLE_PROGRESS_BARS=1, TOKENIZERS_PARALLELISM=false), (2) `contextlib.redirect_stdout/stderr` around the SentenceTransformer construction, (3) widened except to BaseException so any future failure flips `_unavailable` instead of leaving the encoder in a permanent `is_warming` state. Plus diagnostic log to `~/.aether/encoder_warmup.log` so any future hang is debuggable in seconds. Two new regression tests in `test_v126_encoder_warmup_in_subprocess.py`.
-- **F#9 (open, low-priority once F#8 lands in production):** in cold/substring search mode, results that tie on substring score are sorted by creation time, not by trust. Concretely: after correcting `user.age` from 34→31, the truth (trust=0.95) ranked third behind two demoted-to-trust=0 entries because they were imported earlier. Two related issues: (a) `state.py:search` doesn't tiebreak by trust when scores are equal, and (b) `inject_substrate_context.py` filters by score >= 0.15 but not by trust, so trust=0 entries can still get into the LLM's prompt. Both are ~5 line fixes. **F#8 is upstream of F#9** — once cosine search works, ties become rare because embedding similarities differentiate "User age: 31" vs "user age: 34" by tiny vector deltas, and trust naturally weights into the score function.
+(All known findings closed as of v0.12.8.)
+
+### Closed this session
+
+- **F#8 (FIXED v0.12.6 + v0.12.7):** `_LazyEncoder` warmup thread silently hung in MCP-subprocess context. Three-layer fix in v0.12.6 (HF env vars, redirect_stdout/stderr, widened except + diagnostic log). v0.12.7 found the deeper root cause was HF Hub's online connectivity check, not stdout — added force-offline-when-cached. Verified live 2026-04-30 evening: encoder warmed in ~18s, 127/129 substrate nodes have embeddings, doctor reports `[OK] encoder`.
+- **F#9 (FIXED v0.12.8):** trust didn't break ties in search ranking; trust=0 demoted entries leaked into the inject hook's LLM context. Subsumed by the F#10 fix below — both parts addressed.
+- **F#10 (FIXED v0.12.8):** discovered while verifying F#8 against the 127-memory merged substrate. `aether_search "user favorite color"` ranked the demoted `red` (trust=0.67, sim=0.904) *above* all 7 trust=0.95 truths because their `(observed Nx in production)` annotation suffixes diluted their embeddings. Score function `0.7*sim + 0.3*substring` had no trust term — even tiebreak fixes (F#9 part a) wouldn't have helped because the scores weren't tied, cosine was actively anti-ranking the truths. Fix: new `SEARCH_TRUST_WEIGHT = 0.7` constant; `combined *= (1-w) + w*trust` so trust=0 drops to 0.3× score (still surfaces) and trust=1 leaves it unchanged. Also F#9(b): inject_substrate_context.py drops trust≤0 entries from the prompt. After fix: red drops from #1 to #9; all trust=0.95 truths rank above it. Four regression tests in `test_v127_search_trust_weight.py`.
 
 ## Other parking-lot items
 

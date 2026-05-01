@@ -71,6 +71,15 @@ GROUNDING_MIN_SCORE = 0.15  # Below this similarity, the memory isn't relevant
 GROUNDING_MIN_SCORE_SUBSTRING = 0.10
 SENTINEL_BELIEF_CONF = 0.5  # Treat 0.5 as "caller didn't supply real value"
 
+# F#10: trust as a permanent term in search ranking.
+# Without this, cosine alone ranks demoted entries (e.g. corrected-down
+# user.favorite_color: red trust=0.67) above current truths (trust=0.95)
+# whenever the demoted text happens to be shorter / less annotated and
+# thus closer to the bare query embedding. Multiplicative weight with a
+# floor: trust=0 still surfaces as a *0.3 penalty (relevant low-trust
+# matches don't disappear), trust=1 leaves the score unchanged.
+SEARCH_TRUST_WEIGHT = 0.7
+
 # Auto-contradiction-detection threshold on write:
 # Run the StructuralTensionMeter against this many top-similar existing
 # memories. Anything above the threshold gets a CONTRADICTS edge.
@@ -1129,6 +1138,15 @@ class StateStore:
                 combined = 0.7 * sim + 0.3 * min(substring_score, 1.5)
             else:
                 combined = substring_score
+
+            # F#10: weight by trust so demoted entries don't outrank the
+            # current truth when their cosine is similar. Multiplicative
+            # with floor so low-trust relevant matches still surface.
+            trust_factor = (
+                1.0 - SEARCH_TRUST_WEIGHT
+                + SEARCH_TRUST_WEIGHT * float(getattr(node, "trust", 0.0) or 0.0)
+            )
+            combined *= trust_factor
 
             if combined <= 0:
                 continue
