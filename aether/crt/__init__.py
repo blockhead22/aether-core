@@ -21,8 +21,15 @@ Public surface (re-exported for `from aether.crt import ...` ergonomics):
                         for SSE significance scoring.
 
 Nothing here imports from `aether.mcp` or `aether.memory`, keeping `crt`
-a leaf module that downstream tools (fact-checker, disclosure policy,
-governance) can layer on top of.
+a leaf module that downstream tools (disclosure policy, governance) can
+layer on top of.
+
+Fact-checker (``aether.crt.fact_checker``):
+    compute_finding_volatility — CRT volatility scoring for findings
+    crt_filter_contradiction   — second-pass false-positive filter
+    run_verification           — GroundCheck integration (optional dep)
+    get_pending_fact_checks    — query stored findings by volatility
+    resolve_fact_check         — mark a finding resolved
 """
 
 from aether.crt.core import (
@@ -36,6 +43,14 @@ from aether.crt.core import (
     extract_future_relevance,
 )
 
+from aether.crt.fact_checker import (
+    compute_finding_volatility,
+    crt_filter_contradiction,
+    run_verification,
+    get_pending_fact_checks,
+    resolve_fact_check,
+)
+
 __all__ = [
     "BetaTrust",
     "SSEMode",
@@ -45,4 +60,9 @@ __all__ = [
     "encode_vector",
     "extract_emotion_intensity",
     "extract_future_relevance",
+    "compute_finding_volatility",
+    "crt_filter_contradiction",
+    "run_verification",
+    "get_pending_fact_checks",
+    "resolve_fact_check",
 ]
