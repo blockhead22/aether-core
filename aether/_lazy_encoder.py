@@ -59,6 +59,31 @@ _os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
 _os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
 _os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
+# F#8 layer 1.5 (v0.12.7): force offline mode if model is cached. By
+# default HF Hub does an online "etag check" against huggingface.co
+# even when the model is fully cached; if the network is slow/blocked
+# this stalls SentenceTransformer.__init__ for 30s+ per load attempt.
+# We set HF_HUB_OFFLINE=1 only when we can prove the model is locally
+# cached (so a true cold-start install still works).
+def _model_is_cached_locally(model_name: str) -> bool:
+    """True if the HF cache has at least one snapshot for the model."""
+    from pathlib import Path
+    cache_root = Path(_os.environ.get("HF_HOME") or
+                      Path.home() / ".cache" / "huggingface")
+    hub = cache_root / "hub"
+    # HF cache layout: hub/models--<org>--<name>/snapshots/<hash>/
+    safe = "models--" + model_name.replace("/", "--")
+    snapshots = hub / safe / "snapshots"
+    try:
+        return snapshots.exists() and any(snapshots.iterdir())
+    except OSError:
+        return False
+
+
+if _model_is_cached_locally("sentence-transformers/all-MiniLM-L6-v2"):
+    _os.environ.setdefault("HF_HUB_OFFLINE", "1")
+    _os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+
 
 DEFAULT_EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
