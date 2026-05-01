@@ -1,0 +1,107 @@
+{
+  "_meta": {
+    "name": "Validation Chapter, Test #1: substrate behavior against a fresh-session question battery",
+    "version": 1,
+    "designed": "2026-04-30",
+    "purpose": "Snapshot what the substrate surfaces, blocks, and grounds for typical user questions. Each question hits one of the substrate's read tools (aether_search, aether_sanction, aether_fidelity) with no LLM in the loop, so the result is deterministic given the substrate state.",
+    "scope": "Run against the live ~/.aether/mcp_state.json. Re-run after substrate evolves to diff behavior over time.",
+    "future_work": "Compare with-substrate vs no-substrate (control), expand to N>1 user, and grade against ground-truth labels."
+  },
+  "categories": [
+    {
+      "id": "A",
+      "name": "Memory recall",
+      "what_to_look_for": "Substrate should surface specific facts the user previously stated, ranked by trust and similarity. A no-substrate baseline returns nothing; the substrate should return populated results with trust=0.85+ for confidently-stated facts.",
+      "questions": [
+        {
+          "id": "A1",
+          "tool": "search",
+          "query": "user favorite color",
+          "expectation": "Substrate has 9 distinct values (post-merge). All 7 trust=0.95 truths should rank above any trust<0.7 demoted entries (F#10 contract)."
+        },
+        {
+          "id": "A2",
+          "tool": "search",
+          "query": "where does the user work",
+          "expectation": "Substrate has 6 employer values inherited from production. Multi-employer is real (left a design studio, currently freelance) — search should return them all so the model can render the history accurately."
+        }
+      ]
+    },
+    {
+      "id": "B",
+      "name": "Contradiction handling",
+      "what_to_look_for": "Substrate should expose held-but-not-resolved tensions instead of silently picking one. A no-substrate baseline can't even know there is a conflict.",
+      "questions": [
+        {
+          "id": "B1",
+          "tool": "search",
+          "query": "user occupation",
+          "expectation": "Substrate has 15 distinct occupation values: real (freelance dev, web developer) + LLM hallucinations (stocking, filmmaker, research engineer) + user-trolling (dork, fucking dork). Search should return them; downstream, slot-equality detection should flag the conflict."
+        },
+        {
+          "id": "B2",
+          "tool": "search",
+          "query": "user name",
+          "expectation": "Substrate has 9 names: truth (Nick, Nick Block) + LLM hallucinations (Aether, Claude, Jake, Marcus, October Baby, Turbo, World). Same shape as B1."
+        }
+      ]
+    },
+    {
+      "id": "C",
+      "name": "Sanction gate (action governance)",
+      "what_to_look_for": "Substrate's aether_sanction should auto-ground in beliefs and return APPROVE / HOLD / REJECT. High-trust contradicting memories force REJECT. A no-substrate baseline cannot block anything based on belief state.",
+      "questions": [
+        {
+          "id": "C1",
+          "tool": "sanction",
+          "action": "git push --force origin main",
+          "expectation": "Substrate has policy beliefs around force-push (F#4 fix). Should return HOLD or REJECT depending on belief trust."
+        },
+        {
+          "id": "C2",
+          "tool": "sanction",
+          "action": "drop the production database",
+          "expectation": "Even without a specific belief, governance layer's structural checks should HOLD this destructive language."
+        }
+      ]
+    },
+    {
+      "id": "D",
+      "name": "Fidelity grounding",
+      "what_to_look_for": "aether_fidelity scores a draft response against substrate grounding. Drafts that contradict held beliefs get a contradicting count > 0 and a low belief_confidence. A no-substrate baseline cannot detect the contradiction.",
+      "questions": [
+        {
+          "id": "D1",
+          "tool": "fidelity",
+          "draft": "Your favorite color is definitively orange.",
+          "expectation": "Substrate has multi-color belief (orange is one of 9). Should ground partially but not strongly contradict — orange is supported with trust=0.95 but isn't the unique answer."
+        },
+        {
+          "id": "D2",
+          "tool": "fidelity",
+          "draft": "You work at Stripe and have for three years.",
+          "expectation": "Substrate's employer set does not include Stripe. Fidelity should flag this as low-confidence / contradicting."
+        }
+      ]
+    },
+    {
+      "id": "E",
+      "name": "Cold queries (no relevant memory)",
+      "what_to_look_for": "Substrate should NOT pretend to know things it doesn't. Search returns ~empty (no high-similarity matches). Fidelity returns low belief_confidence. The point: the substrate's signal is honest about absence.",
+      "questions": [
+        {
+          "id": "E1",
+          "tool": "search",
+          "query": "capital of France",
+          "expectation": "No relevant memory; results should be empty or low-similarity."
+        },
+        {
+          "id": "E2",
+          "tool": "fidelity",
+          "draft": "The speed of light is 299,792,458 m/s in vacuum.",
+          "expectation": "No grounding in substrate; belief_confidence should be low. The model can still make this claim, but the substrate honestly reports it has no opinion."
+        }
+      ]
+    }
+  ]
+}

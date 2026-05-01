@@ -1,0 +1,6 @@
+# Time-stamped snapshot runs accumulate locally; they are not source.
+# The hand-named *_warm.md / *_cold.md reference snapshots stay tracked.
+validation_test1_*.md
+!validation_test1_2026-04-30_warm.md
+!validation_test1_2026-04-30_cold.md
+*.json

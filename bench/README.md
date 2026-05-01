@@ -92,3 +92,85 @@ test suite. Five assertions:
 
 So `pytest tests/` re-runs the bench every time. A regression in
 fidelity will fail the suite with a per-case breakdown.
+
+---
+
+# Validation Chapter, Test #1 — observational substrate snapshot
+
+`run_fidelity_bench.py` is unit-test style: synthetic substrates, expected
+verdicts, pass/fail. `validation_test1.py` is observational: runs a fixed
+question battery against the **live** substrate (your actual
+`~/.aether/mcp_state.json`) and produces a markdown report of what the
+substrate's read tools actually return.
+
+## Run
+
+```bash
+# Default: warm-up encoder, run against live substrate, save to bench/results/
+python -m bench.validation_test1
+
+# Specific state file
+python -m bench.validation_test1 --state-path ./my_state.json
+
+# JSON for diffing snapshots over time
+python -m bench.validation_test1 --format json --out snapshot.json
+
+# Skip warmup (cold-mode snapshot — what a stranger sees right after install)
+python -m bench.validation_test1 --wait-warmup 0
+```
+
+## Question battery
+
+10 questions across 5 categories in `validation_test1_questions.json`:
+
+| Category | What it exercises | Tools |
+|---|---|---|
+| A. Memory recall | Substrate surfaces user-stated facts | `aether_search` |
+| B. Contradiction handling | Substrate exposes held tensions | `aether_search` |
+| C. Sanction gate | Substrate blocks unsafe actions | `aether_sanction` |
+| D. Fidelity grounding | Substrate scores draft responses | `aether_fidelity` |
+| E. Cold queries | Substrate doesn't pretend to know | `aether_search`, `aether_fidelity` |
+
+The questions are deliberately fixed across runs so two snapshots can be
+diffed to show how substrate behavior evolved. Edit the JSON to add or
+swap questions; existing snapshots become non-comparable but the format
+stays the same.
+
+## What the first run surfaced (2026-04-30)
+
+Even running test #1 the first time produced three real findings — exactly
+the substrate-caught-itself loop the README promises:
+
+- **Sanction gate has no default policy beliefs.**
+  `aether_sanction("git push --force origin main")` returns APPROVE on a
+  fresh substrate because F#4's policy contradiction detection requires
+  an explicit "never force-push" belief. Either `aether init` should seed
+  a default belief set, or sanction needs structural detection of
+  high-risk language without belief presence.
+
+- **Trust-vs-verbosity ranking gap.**
+  F#10's `SEARCH_TRUST_WEIGHT=0.7` keeps a trust=0.67 demoted memory below
+  trust=0.95 truths, but doesn't keep trust=0.90 short-text entries from
+  outranking trust=0.95 verbose-text entries. Visible in category B
+  (name search): "user name: Jake" (trust=0.90) outranked
+  "user name: Nick (observed 65x in production)" (trust=0.95) because
+  Jake's text aligns better with the bare query.
+
+- **Inject threshold leaks cold-query noise.**
+  "capital of France" search returned `user name: Claude` at score 0.158
+  — just above the 0.15 inject threshold, so unrelated memories would
+  reach the LLM. Either raise the threshold to ~0.20 or add a per-query
+  semantic relevance gate.
+
+These belong in NEXT_SESSION's open-findings list once investigated /
+prioritized. The methodology proved its purpose on first contact.
+
+## Future work
+
+- **Pair with a no-substrate baseline.** Same questions against an empty
+  `StateStore`. The diff is the substrate's measurable value-add.
+- **Ground-truth labels.** Add expected outcomes per question so the
+  report can grade itself instead of just snapshotting.
+- **Time-series.** `bench/results/` accumulates timestamped snapshots; a
+  diff tool could highlight what changed when.
+- **N>1 user.** Run on substrates seeded by different real users.
