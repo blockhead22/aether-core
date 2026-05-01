@@ -33,8 +33,8 @@ def test_aether_imports_in_fresh_venv(aether_venv):
     assert result.returncode == 0, (
         f"import aether failed:\n  stdout: {result.stdout}\n  stderr: {result.stderr}"
     )
-    assert result.stdout.strip() == "0.12.21", (
-        f"version mismatch: got {result.stdout.strip()!r}, expected '0.12.21'"
+    assert result.stdout.strip() == "0.13.0", (
+        f"version mismatch: got {result.stdout.strip()!r}, expected '0.13.0'"
     )
 
 

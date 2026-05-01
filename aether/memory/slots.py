@@ -1502,6 +1502,163 @@ def extract_fact_slots(text: str) -> Dict[str, ExtractedFact]:
             employer = m.group(1).strip().rstrip(",.")
             facts["employer"] = ExtractedFact("employer", employer, _norm_text(employer))
 
+    # ────────────────────────────────────────────────────────────────────
+    # v0.13.0 Phase A: Third-person + project-fact slots.
+    #
+    # The 2026-05-01 reflexive bench surfaced that aether_fidelity could
+    # not catch hallucinations because slot extraction was first-person-
+    # only. A draft like "Nick is a chef in Paris" extracted no slots, so
+    # compute_grounding had no slot evidence and fell back to similarity
+    # alone (which classified semantically-related-but-irrelevant memories
+    # as supporting at high trust).
+    #
+    # This block adds extractors that fire on:
+    #   - third-person prose ("Nick is a chef in Paris", "Nick uses emacs")
+    #   - editor / IDE preferences (no extractor existed for this)
+    #   - project facts ("CRT uses FAISS", "vector dimension is 768")
+    #
+    # All produce slot:k=v tags compatible with the existing slot_equality
+    # detector in compute_grounding.
+    # ────────────────────────────────────────────────────────────────────
+
+    # Editor / IDE preference. Fires on first-person and third-person.
+    # Examples:
+    #   "I prefer vim over emacs"        → editor=vim
+    #   "Nick uses emacs primarily"       → editor=emacs
+    #   "We use VS Code in the team"      → editor=vs_code
+    if "editor" not in facts:
+        _editor_pat = re.compile(
+            r"\b(?:i|we|[A-Z][a-zA-Z]+(?:'s)?)\s+"
+            r"(?:prefer|prefers|use|uses|using|switched to|moved to)\s+"
+            r"(vim|emacs|neovim|nvim|vs ?code|sublime|atom|jetbrains|"
+            r"intellij|pycharm|webstorm|goland|rider|fleet|zed|cursor|helix)"
+            r"(?:\s+(?:over|instead of|primarily|exclusively|for))?",
+            re.IGNORECASE,
+        )
+        m = _editor_pat.search(text)
+        if m:
+            editor_raw = m.group(1).strip().lower().replace(" ", "_")
+            facts["editor"] = ExtractedFact("editor", editor_raw, editor_raw)
+
+    # Third-person occupation: "X is a Y" or "X is the Y of Z"
+    # Produces the same slot key as the first-person compound_intro
+    # extractor above, so first-person and third-person prose about the
+    # same fact collide on the same slot when checking contradictions.
+    # Only fires when subject looks like a proper name (capitalized,
+    # not "I"/"We"/"It"/"This"/"That") and the occupation is a noun phrase.
+    if "occupation" not in facts:
+        _third_person_occ = re.compile(
+            r"\b([A-Z][A-Za-z'-]{1,40})\s+is\s+"
+            r"(?:a|an|the)\s+"
+            r"([a-z][a-zA-Z\s-]{2,40}?)"
+            r"(?:\s+(?:of|in|at|for|on)\s+|\s*[.,;]|$)",
+        )
+        m = _third_person_occ.search(text)
+        if m:
+            subj = m.group(1).strip()
+            occ = m.group(2).strip()
+            # Skip if subj is a stopword that the regex anchors caught
+            _subj_stopwords = {"This", "That", "These", "Those", "It"}
+            if subj not in _subj_stopwords and len(occ) >= 3:
+                # Drop if it's clearly not an occupation (e.g. "good", "happy")
+                _occ_blocklist = {"good", "great", "happy", "sad", "right",
+                                  "wrong", "here", "there", "back", "ready"}
+                if occ.lower().split()[0] not in _occ_blocklist:
+                    facts["occupation"] = ExtractedFact("occupation", occ, _norm_text(occ))
+
+    # Third-person location: "X lives in Y" / "X is in Y" / "X is based in Y".
+    # Excludes "works at" — that's the employer pattern, captured separately.
+    if "location" not in facts:
+        _third_person_loc = re.compile(
+            r"\b[A-Z][A-Za-z'-]{1,40}\s+(?:lives|is|is based|resides)\s+(?:in)\s+"
+            r"([A-Z][A-Za-z\s.'-]{1,40}?)(?:\s*[.,]|\s+(?:and|but|so)\s|$)",
+        )
+        m = _third_person_loc.search(text)
+        if m:
+            loc = m.group(1).strip().rstrip(",.")
+            facts["location"] = ExtractedFact("location", loc, _norm_text(loc))
+        else:
+            # Compound form caught by occupation regex above already extracted
+            # role. Try to also pull out a location from "X is a Y in Z".
+            _compound = re.compile(
+                r"\b[A-Z][A-Za-z'-]{1,40}\s+is\s+(?:a|an|the)\s+"
+                r"[a-z][a-zA-Z\s-]{2,40}?\s+(?:in|at)\s+"
+                r"([A-Z][A-Za-z\s.'-]{1,40}?)(?:\s*[.,]|$)",
+            )
+            m2 = _compound.search(text)
+            if m2:
+                loc = m2.group(1).strip().rstrip(",.")
+                facts["location"] = ExtractedFact("location", loc, _norm_text(loc))
+
+    # Third-person employer: "X works at Y"
+    if "employer" not in facts:
+        _third_person_emp = re.compile(
+            r"\b[A-Z][A-Za-z'-]{1,40}\s+works?\s+(?:at|for)\s+"
+            r"([A-Z][A-Za-z\s.'-]{1,50}?)(?:\s*[,.]|\s+on\b|\s+as\b|\s*$)",
+        )
+        m = _third_person_emp.search(text)
+        if m:
+            emp = m.group(1).strip().rstrip(",.")
+            facts["employer"] = ExtractedFact("employer", emp, _norm_text(emp))
+
+    # Project facts: "X uses Y" / "X is built with Y" — for project-shaped
+    # subjects (uppercase, often acronym-ish) and known framework/tool values.
+    # Examples:
+    #   "CRT uses FAISS"          → project_vector_store=faiss (when value matches)
+    #   "We use Postgres"          → project_database=postgres
+    if "project_vector_store" not in facts:
+        _vector_store_pat = re.compile(
+            r"\b(?:[A-Z][A-Za-z0-9_-]{1,30}|the (?:project|repo|codebase)|we|the team)\s+"
+            r"(?:uses?|using|built with|based on|backed by)\s+"
+            r"(faiss|pinecone|weaviate|chromadb?|qdrant|milvus|pgvector|elasticsearch)",
+            re.IGNORECASE,
+        )
+        m = _vector_store_pat.search(text)
+        if m:
+            store = m.group(1).strip().lower()
+            facts["project_vector_store"] = ExtractedFact(
+                "project_vector_store", store, store
+            )
+
+    # Project embedding dimension: "vector dimension is N" / "N-dim embeddings"
+    # / "embedding size of N" — captures the integer.
+    if "project_embedding_dim" not in facts:
+        _dim_pats = [
+            re.compile(
+                r"\b(?:vector dimension|embedding dim(?:ension)?|"
+                r"hidden size|embedding size)\s+(?:is|of|=)\s+(\d{2,5})\b",
+                re.IGNORECASE,
+            ),
+            re.compile(
+                r"\b(\d{2,5})[ -]?dim(?:ensional)?\s+(?:embed|vector)",
+                re.IGNORECASE,
+            ),
+        ]
+        for pat in _dim_pats:
+            m = pat.search(text)
+            if m:
+                dim = m.group(1)
+                facts["project_embedding_dim"] = ExtractedFact(
+                    "project_embedding_dim", dim, dim
+                )
+                break
+
+    # Project framework / web stack: "X uses Flask" / "built with FastAPI"
+    if "project_framework" not in facts:
+        _framework_pat = re.compile(
+            r"\b(?:[A-Z][A-Za-z0-9_-]{1,30}|the (?:project|repo|codebase|app|api)|we|the team)\s+"
+            r"(?:uses?|using|built with|based on|written in)\s+"
+            r"(flask|fastapi|django|express|nextjs|next\.js|nuxt|svelte|sveltekit|"
+            r"react|vue|angular|tornado|aiohttp|sanic|rails|spring|laravel)",
+            re.IGNORECASE,
+        )
+        m = _framework_pat.search(text)
+        if m:
+            fw = m.group(1).strip().lower().replace(".", "").replace(" ", "_")
+            facts["project_framework"] = ExtractedFact(
+                "project_framework", fw, fw
+            )
+
     # Strip name/assistant_name if auto-extraction is disabled.
     # Names should come from auth.display_name, not conversation inference.
     if not _EXTRACT_NAMES_FROM_CONVERSATION:
