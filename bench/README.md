@@ -23,17 +23,24 @@ but do not trigger non-zero exit.
 
 ## Categories
 
-| Category | What it tests | Current rate |
-|---|---|---|
-| `factual_contradiction` | StructuralTensionMeter slot conflicts (Seattle vs Portland) | 100% |
-| `mutex_contradiction` | Class-based mutex (AWS vs GCP, Postgres vs MySQL) — v0.6 | 100% |
-| `negation_asymmetry` | "We use X not Y" vs imperative to use Y — v0.5 | 100% |
-| `policy_violation` | Prohibition + imperative (force push, --no-verify) — v0.5 | 100% |
-| `methodological_overclaim` | Inference draft + methodological-gap memory — v0.9.3 | 100% |
-| `no_issue_grounded` | Claim aligns with substrate; should surface support | 100% |
-| `no_issue_unrelated` | Claim about topic substrate doesn't cover; no spurious flags | 100% |
-| `false_positive_guard` | Specificity tests — must NOT fire on superficially-similar text | 100% |
-| `known_gap_quantitative` | Numeric / version / date conflicts (NOT YET caught) | 0% (tracked) |
+Two columns: **warm** = encoder loaded (`pip install aether-core[ml]` + warmup completed), **cold** = no encoder (substring + Jaccard fallback only). The numbers below are **`bench/run_fidelity_bench.py`** results on a clean substrate, not the live `~/.aether/` substrate.
+
+| Category | What it tests | Warm | Cold |
+|---|---|---:|---:|
+| `factual_contradiction` | StructuralTensionMeter slot conflicts (Seattle vs Portland) | 100% | 100% |
+| `mutex_contradiction` | Class-based mutex (AWS vs GCP, Postgres vs MySQL) — v0.6 | 100% | 100% |
+| `false_positive_guard` | Specificity tests — must NOT fire on superficially-similar text | 100% | 100% |
+| `no_issue_unrelated` | Claim about topic substrate doesn't cover; no spurious flags | 100% | 100% |
+| `methodological_overclaim` | Inference draft + methodological-gap memory — v0.9.3 | 100% | 80% |
+| `policy_violation` | Prohibition + imperative (force push, --no-verify) — v0.5 | 100% | 50% |
+| `no_issue_grounded` | Claim aligns with substrate; should surface support | 100% | 25% |
+| `negation_asymmetry` | "We use X not Y" vs imperative to use Y — v0.5 | 100% | 0% |
+| `known_gap_quantitative` | Numeric / version / date conflicts (NOT YET caught) | 0% | 0% |
+| **Blocker pass rate** |  | **100% (26/26)** | **~76% (22/29)** |
+
+**Why cold rates degrade.** The categories that survive cold mode (`factual_contradiction`, `mutex_contradiction`, `false_positive_guard`, `no_issue_unrelated`) are the ones doing pure slot extraction or class-based mutex — structural primitives that need no embeddings. The categories that fall (`negation_asymmetry`, `no_issue_grounded`, parts of `policy_violation`) all gate on `embedding_similarity >= 0.45` for meter dispatch, and Jaccard on bare tokens rarely clears that gate. Cold mode is a documented degraded-functionality state, not a regression — see `_v0.9.5_` release notes for the original baseline.
+
+**What this means for installs.** On a fresh Mac install without `[ml]` (PyTorch + sentence-transformers, ~2GB), the substrate runs in cold mode by default. `aether warmup` after `pip install aether-core[ml]` is the path to warm-mode numbers. `aether doctor` reports the encoder state explicitly so you can tell which mode you're in.
 
 ## Adding a case
 
