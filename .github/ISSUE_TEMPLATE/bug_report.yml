@@ -1,0 +1,60 @@
+name: Bug report
+description: Something is broken or behaving unexpectedly.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug. The fastest path to a fix is the
+        `aether doctor --report` bundle below — it contains version,
+        platform, install state, and recent log tails in one paste.
+
+        **Privacy note:** the report is generated locally from public
+        log files and metadata. It does NOT include your substrate's
+        memory contents. Skim the output for paths or usernames you
+        don't want public before submitting.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you do, what did you expect to happen, what actually happened?
+      placeholder: |
+        I ran `aether ...` and expected ...
+        Instead, ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: doctor-report
+    attributes:
+      label: aether doctor --report
+      description: |
+        Run `aether doctor --report` and paste the full output. This
+        captures version, platform, all 7 doctor checks, and recent
+        diagnostic log tails. Without this we usually can't reproduce.
+      render: markdown
+      placeholder: |
+        ## Environment
+
+        - aether-core: `0.12.x`
+        - python: `3.10.x`
+        ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Repro steps
+      description: Smallest sequence of commands or actions that triggers the issue.
+      placeholder: |
+        1. ...
+        2. ...
+        3. observe ...
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else
+      description: Stack traces, screenshots, related issues, suspicions about root cause.
