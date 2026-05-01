@@ -414,15 +414,57 @@ Structure beats semantics for this kind of contradiction work — at least on th
 
 Cascade pressure can be measured. Belief revisions propagate through a graph with bounded depth and damping. There is real math under it; a paper is in flight.
 
+## What's measurably true today (`bench/smoke_v131.py`)
+
+Eight independent end-to-end probes that exercise the headline contracts advertised in this README. They're subprocess-based and do not run through the unit-test harness, so they catch shipped-version regressions the unit tests would miss. Run with:
+
+```bash
+python -m bench.smoke_v131
+```
+
+Latest run on v0.13.2 (Windows, 2026-05-01):
+
+| Probe | Verifies | Result |
+|---|---|---|
+| version | `0.13.1` import | `aether 0.13.2` |
+| chef-in-Paris (Phase A) | natural-prose fidelity grading on third-person facts | `belief_conf=0.00, contradicts=1` (was 0.95 pre-Phase-A) |
+| polarity-aware grounding (v0.12.21) | "delete X without backup" not classified as supporting "Never delete X without backup" | `belief_conf=0.21, support=0, contradicts=1` |
+| `git status` not blocked (v0.12.21) | read-only git verbs do not trip the force-push prohibition | `contradicts=0` |
+| Option A/B drift (Phase B v0.13.1) | paraphrased decision-prose conflict surfaces as `slot_value_conflict:project_chosen_option:A<>B` at write time | 2 contradicts edges |
+| sanction blocks force-push | F#11 contract — at least one high-trust seeded belief catches force-push | `contradicts=3, high_trust=3` |
+| cold-query honesty | off-topic queries return low belief_confidence (no overconfident grounding) | `belief_conf=0.30` |
+| MCP server boot | `python -m aether.mcp` constructs cleanly | constructed cleanly |
+
+**8/8 PASS** on v0.13.2. The smoke probe is the publishable evidence behind every claim in the bullets above. If a future change breaks any of them, the probe goes red, and the README claim that depends on it gets pulled back until the fix lands.
+
+## What aether does and doesn't do (yet)
+
+Calibrated against tonight's verifiable bench data. Not aspirational.
+
+**Does:**
+- Persistent belief state with trust scores that move under correction (cascade through BDG, with `aether_correct` + `aether_cascade_preview`).
+- Structural slot-conflict detection on facts that produce slot tags — covers personal facts (`occupation`, `location`, `employer`, `editor`, `name`, `favorite_color`, etc.) and project facts (`project_vector_store`, `project_framework`, `project_embedding_dim`, `project_chosen_option`). Both at write time (auto-ingest) and read time (`aether_fidelity`).
+- Pre-action sanction gate against the 7 default policy beliefs seeded by `aether init` (force-push, `--no-verify`, prod-data deletion, `rm -rf`).
+- Cross-session continuity. Same belief state across Claude/GPT/local model swaps.
+- Auto-ingest captures high-signal facts every turn through a Stop hook (regex extractors, opt-out via `AETHER_DISABLE_AUTOINGEST=1`, secret redaction in front).
+
+**Does NOT (yet):**
+- Catch paraphrased contradictions when neither memory produces a slot tag from the current extractor vocabulary. The shape detector handles template-identical numeric drift (`is 10 weeks` vs `is 6 weeks`); the slot extractor handles ~30 categories. Outside that, contradictions go undetected.
+- Detect "co-policy" tensions in DECISIONS.md-style prose where two facts reference different elements of a closed set (e.g. "uses FAISS" vs "did not pick Pinecone" — semantically aligned, structurally unaligned). Slot canonicalization with entity awareness is on the roadmap (Phase C).
+- Validate against an external benchmark we did not author. The fidelity corpus is in-distribution to the meter. EQL-Bench integration is queued.
+- Stay calibrated when the contradiction layer is upstream of multi-agent handoff drift over 50+ turns. That's the validation chapter that hasn't been run yet.
+
+The honest read: **the substrate (storage + governance + cascade + sanction) is shipped and works.** The contradiction layer works for slot-template prose and the categories the extractor knows about. Paraphrase-blindness across categories the extractor doesn't yet cover is a real, named, currently-open limitation.
+
 ## Where this came from
 
-This grew out of running an assistant in production for a long time and watching the same problems come back. Continuity drift between sessions. Contradictions getting silently smoothed over. Trust on a fact climbing back up after the user corrected it twice. The structural tension meter came out of an experiment where removing the LLM from the belief-verification step roughly doubled accuracy, which was annoying and clarifying in equal measure.
+This grew out of running an assistant in production for a long time and watching the same problems come back. Continuity drift between sessions. Contradictions getting silently smoothed over. Trust on a fact climbing back up after the user corrected it twice. The structural tension meter came out of an informal experiment where removing the LLM from the belief-verification step felt markedly more reliable — a properly-scoped reproducible comparison vs LLM-as-judge on a fixed corpus is on the validation roadmap (see [ROADMAP.md](ROADMAP.md) Track 2), not in the repo today. Take the design preference as a hypothesis the bench is consistent with, not as a measured result the library proves.
 
 The architecture was originally called CRT (Contradiction-aware Reconciliation and Trust). It is now Aether, which is what it has always actually been.
 
 ## Status and roadmap
 
-v0.12.8 (2026-04-30) closes all 10 known findings. The substrate is structurally complete: auto-ingest fires after every turn, the server picks up external writes on the next call, all read tools degrade gracefully on corrupt nodes, search is now trust-weighted. See [ROADMAP.md](ROADMAP.md) for what is coming and what is intentionally out of scope.
+v0.13.2 (2026-05-01) — substrate is structurally complete (auto-ingest fires every turn, server picks up external writes, all read tools degrade gracefully on corrupt nodes, search is trust-weighted, sanction has default policy beliefs from `aether init`, the launcher/PEP-668 install path works on Mac and Windows). The contradiction layer now catches paraphrase-blind cases the v0.12 reflexive bench surfaced, on the slot categories the extractor covers (Phase A + Phase B). The remaining open work is paraphrase coverage on categories the extractor doesn't know about yet, and external-benchmark validation against EQL-Bench. See [ROADMAP.md](ROADMAP.md) for the full Track 0 / Track 2 plan.
 
 ## License
 

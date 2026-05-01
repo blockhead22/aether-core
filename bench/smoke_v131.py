@@ -1,5 +1,7 @@
-"""End-to-end smoke for v0.13.1 — run against the live ~/.aether substrate
-(no temp dirs) so we exercise the actual install path users will hit.
+"""End-to-end smoke for the current shipped version — run against the
+live ~/.aether substrate (no temp dirs) so we exercise the actual
+install path users will hit. (File name is `smoke_v131.py` for
+historical reasons; the probes are version-agnostic.)
 
 Probes, in order:
 
@@ -59,10 +61,15 @@ def _tmp_store():
 # --------------------------------------------------------------------------
 
 def probe_version():
+    """Sanity check: aether is importable and reports a version string.
+    The probe is version-agnostic — running this against v0.13.x or
+    later should pass. The contract is "import works, version present,"
+    not "version equals X." For exact-version assertions, see
+    tests/test_public_surface.py."""
     import aether
-    v = aether.__version__
-    if v != "0.13.1":
-        return False, f"expected 0.13.1, got {v}"
+    v = getattr(aether, "__version__", "")
+    if not v or v.count(".") < 1:
+        return False, f"aether.__version__ is empty or malformed: {v!r}"
     return True, f"aether {v}"
 
 
@@ -226,8 +233,9 @@ def main() -> int:
         ("MCP server boot", probe_mcp_server_boot),
     ]
 
+    import aether
     print("=" * 70)
-    print(f"v0.13.1 smoke test")
+    print(f"aether-core smoke test  (running v{getattr(aether, '__version__', '?')})")
     print("=" * 70)
 
     pass_count = 0
