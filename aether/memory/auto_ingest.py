@@ -24,13 +24,108 @@ Usage:
 
 This module is pure stdlib (regex). No network, no LLM calls. Designed
 to live inside a Claude Code Stop hook or any equivalent.
+
+Privacy (v0.12.9):
+    Set ``AETHER_DISABLE_AUTOINGEST=1`` to short-circuit extraction —
+    every call returns an empty list. The Stop hook stays installed
+    but writes nothing. Use it during sensitive work (debugging an
+    auth flow, pasting a one-off secret, etc.) without uninstalling.
+
+    Common secrets are redacted from the input *before* extraction
+    runs (API keys, bearer tokens, key-value pairs like
+    ``password=...``, PEM private-key blocks). Conservative on purpose
+    — emails and phone numbers are left alone because they are often
+    legitimate context. See ``redact_secrets`` for the pattern set.
 """
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from typing import List, Optional
+
+
+# ---------------------------------------------------------------------------
+# Opt-out
+# ---------------------------------------------------------------------------
+
+_TRUTHY = {"1", "true", "yes", "on"}
+
+
+def _autoingest_disabled() -> bool:
+    """True when the AETHER_DISABLE_AUTOINGEST env var is set truthy."""
+    return os.environ.get("AETHER_DISABLE_AUTOINGEST", "").strip().lower() in _TRUTHY
+
+
+# ---------------------------------------------------------------------------
+# Secret redaction
+# ---------------------------------------------------------------------------
+
+# Conservative pattern set: high-precision, low-recall. We catch the
+# common high-signal API-key shapes (sk-, AKIA, ghp_, xox*-, Stripe
+# style, Bearer headers, PEM blocks) and the explicit "password=value"
+# form. We do NOT redact emails or phone numbers — those are usually
+# legitimate context and aggressive redaction would damage the
+# extractor's signal more than it would protect anything.
+
+# Regex name comments live alongside the pattern so the redactor's
+# coverage is auditable from the source.
+_REPLACEMENT = "[REDACTED]"
+
+_SECRET_PATTERNS: List[re.Pattern] = [
+    # OpenAI / Anthropic style API keys (sk-...).
+    re.compile(r"\bsk-[A-Za-z0-9_\-]{16,}\b"),
+    # Stripe-style live/test keys.
+    re.compile(r"\b(?:sk|pk|rk)_(?:live|test)_[A-Za-z0-9]{16,}\b"),
+    # AWS access key ID.
+    re.compile(r"\bAKIA[0-9A-Z]{16}\b"),
+    # GitHub fine-grained PATs and modern tokens.
+    re.compile(r"\bgh[pousr]_[A-Za-z0-9]{20,}\b"),
+    re.compile(r"\bgithub_pat_[A-Za-z0-9_]{20,}\b"),
+    # Slack bot/user/app tokens.
+    re.compile(r"\bxox[abprs]-[A-Za-z0-9\-]{10,}\b"),
+    # Bearer tokens in HTTP headers.
+    re.compile(r"\bBearer\s+[A-Za-z0-9_\-=\.+/]{20,}\b"),
+    # PEM private-key blocks (RSA/EC/OPENSSH/etc.).
+    re.compile(
+        r"-----BEGIN (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----"
+        r"[\s\S]+?"
+        r"-----END (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----",
+        re.MULTILINE,
+    ),
+]
+
+# Key=value form: password=hunter2, api_key="sk-...", token: abc123, etc.
+# Captures the key, the delimiter, and the value separately so we keep
+# the keyword visible in the redacted output (helpful for debugging
+# false positives).
+_KV_SECRET_PATTERN = re.compile(
+    r"\b(password|passwd|pwd|token|api[_-]?key|secret|access[_-]?key|"
+    r"auth|client[_-]?secret|private[_-]?key)"
+    r"(\s*[:=]\s*[\"']?)"
+    r"([^\s\"'\n,;]{6,})",
+    re.IGNORECASE,
+)
+
+
+def redact_secrets(text: str) -> str:
+    """Replace likely secrets with ``[REDACTED]``.
+
+    Returns the original string when input is empty / None.
+    Idempotent: running redaction on already-redacted text is a no-op.
+    Conservative: matches API-key shapes, bearer tokens, PEM blocks,
+    and explicit key=value forms. Emails and phone numbers are NOT
+    matched (they are usually legitimate signal).
+    """
+    if not text:
+        return text
+    redacted = text
+    for pat in _SECRET_PATTERNS:
+        redacted = pat.sub(_REPLACEMENT, redacted)
+    # Key=value: preserve key + delimiter, redact value.
+    redacted = _KV_SECRET_PATTERN.sub(rf"\1\2{_REPLACEMENT}", redacted)
+    return redacted
 
 
 @dataclass
@@ -194,9 +289,23 @@ def extract_facts(
                    verbose turn from flooding the substrate.
 
     Returns:
-        List of `CandidateFact`. Empty list if nothing matched. The
-        caller is responsible for calling `aether_remember` on each.
+        List of `CandidateFact`. Empty list if nothing matched, if
+        ``AETHER_DISABLE_AUTOINGEST`` is set truthy, or if both inputs
+        were entirely secrets that got redacted to nothing actionable.
+        The caller is responsible for calling `aether_remember` on each.
     """
+    if _autoingest_disabled():
+        return []
+
+    # Redact common secrets before pattern matching. This is
+    # defense-in-depth — even if the extractor's regex would happily
+    # capture an API key as "user identity," the redaction layer
+    # ensures the candidate fact text contains [REDACTED] instead.
+    if user_message:
+        user_message = redact_secrets(user_message)
+    if assistant_response:
+        assistant_response = redact_secrets(assistant_response)
+
     found: List[CandidateFact] = []
 
     if user_message:

@@ -125,6 +125,24 @@ python examples/01_quickstart.py    # belief/speech gap caught
 python examples/02_full_pipeline.py # substrate end-to-end
 ```
 
+## Privacy and opt-out
+
+The auto-ingest hook captures every turn. That is the point — the substrate has to grow on its own to be useful — but it is not always what you want.
+
+Two layers of control. They compose.
+
+**Opt-out.** Set `AETHER_DISABLE_AUTOINGEST=1` and the hook stays installed but writes nothing. Use it during sensitive work (debugging an OAuth flow, pasting a one-off token, walking through a customer's data) without uninstalling. Honored both at the hook entry point and inside `extract_facts`, so any client wired to the same env still respects it.
+
+```bash
+# pause auto-ingest for one shell session
+export AETHER_DISABLE_AUTOINGEST=1
+claude
+```
+
+**Redaction.** Common secrets get replaced with `[REDACTED]` *before* the extractor sees them, so they cannot end up as candidate fact text. Patterns covered: API-key shapes (`sk-...`, `AKIA...`, `ghp_...`, Stripe live/test, Slack `xox[abprs]-...`), bearer tokens, PEM private-key blocks, and explicit `password=` / `token=` / `api_key=` key-value forms. Conservative on purpose — emails and phone numbers are *not* matched because they are usually legitimate context. See [`aether/memory/auto_ingest.py`](aether/memory/auto_ingest.py) for the full pattern set; if you need stricter redaction, fork the regex list.
+
+State lives at `~/.aether/mcp_state.json` (override with `AETHER_STATE_PATH`). It is a plain JSON file — `cat` it, grep it, delete it, version-control a sanitized copy. There is no remote service involved.
+
 ## What's in the box
 
 ### 1. Governance: catch overconfidence at the boundary

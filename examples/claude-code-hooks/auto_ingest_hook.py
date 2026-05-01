@@ -178,6 +178,15 @@ def _last_message_inline(payload: dict, *roles: str) -> str:
 
 
 def main() -> int:
+    # v0.12.9: AETHER_DISABLE_AUTOINGEST short-circuits the hook.
+    # Same env var is checked inside extract_facts/ingest_turn, but
+    # honoring it here lets us skip transcript I/O entirely when the
+    # user wants the hook off (sensitive work, debugging, etc.).
+    if os.environ.get("AETHER_DISABLE_AUTOINGEST", "").strip().lower() in (
+        "1", "true", "yes", "on"
+    ):
+        return 0
+
     payload = _read_stdin_payload()
 
     user_msg = ""
