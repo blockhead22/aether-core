@@ -58,6 +58,10 @@ from typing import Any, Dict, List, Optional
 _os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
 _os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
 _os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+# v0.13.2: stop tqdm globally. Without this, tqdm progress bars from
+# torch / sentence-transformers can still emit even with the HF
+# variables set, and they hit stdout from the warmup thread.
+_os.environ.setdefault("TQDM_DISABLE", "1")
 
 # F#8 layer 1.5 (v0.12.7): force offline mode if model is cached. By
 # default HF Hub does an online "etag check" against huggingface.co
@@ -181,25 +185,25 @@ class LazyEncoder:
                 _log_warmup("load_cache_hit")
                 return
             try:
-                # F#8 defense layer 2: capture stdout/stderr so any
-                # remaining HF/torch/tqdm output doesn't pollute the
-                # MCP stdio wire protocol. We discard the captured
-                # output — diagnostic lines go to encoder_warmup.log
-                # instead.
-                import contextlib
-                import io
-                stdout_buf = io.StringIO()
-                stderr_buf = io.StringIO()
-                with contextlib.redirect_stdout(stdout_buf), \
-                     contextlib.redirect_stderr(stderr_buf):
-                    from sentence_transformers import SentenceTransformer
-                    model = SentenceTransformer(self.model_name)
+                # v0.13.2: do NOT use contextlib.redirect_stdout here.
+                # That swap mutates sys.stdout process-globally — it's
+                # not thread-local — so during the seconds the warmup
+                # thread holds the redirect, the main thread's print()
+                # calls get silently eaten. That's exactly what made
+                # `aether status` / `check` / `contradictions` produce
+                # zero stdout for ~3-8s after StateStore() construction.
+                #
+                # The HF env-var suppression at module load (above)
+                # handles the noise the redirect was meant to catch:
+                # TRANSFORMERS_VERBOSITY=error silences transformers,
+                # HF_HUB_DISABLE_PROGRESS_BARS + TQDM_DISABLE kill the
+                # download progress bars, TOKENIZERS_PARALLELISM=false
+                # suppresses the parallelism warning.
+                from sentence_transformers import SentenceTransformer
+                model = SentenceTransformer(self.model_name)
                 _MODEL_CACHE[self.model_name] = model
                 self._model = model
-                _log_warmup(
-                    f"load_ok captured_stdout_bytes={len(stdout_buf.getvalue())} "
-                    f"captured_stderr_bytes={len(stderr_buf.getvalue())}"
-                )
+                _log_warmup("load_ok")
             except BaseException as e:
                 # F#8 defense layer 3: BaseException catches everything.
                 # Without this, an interpreter-level failure during

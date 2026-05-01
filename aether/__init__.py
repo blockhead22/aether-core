@@ -10,4 +10,4 @@ Modules:
     aether.memory        -- Fact slot extraction and memory graphs
 """
 
-__version__ = "0.13.1"
+__version__ = "0.13.2"
