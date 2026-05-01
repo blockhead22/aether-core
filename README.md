@@ -67,6 +67,51 @@ Restart Claude Code. The plugin's SessionStart hook does everything else on firs
 
 To verify, run `aether doctor` in a terminal — should report 7 OK checks. If `aether-core` is behind the latest PyPI release, `aether status` and `aether doctor` flag it with the upgrade command. Disable the version-drift check with `AETHER_NO_UPDATE_CHECK=1`.
 
+### Prerequisites
+
+The hooks call `python "${CLAUDE_PLUGIN_ROOT}/hooks/...py"`. That works out of the box on most Windows setups but **fails on a stock macOS or Linux install**, where the unversioned `python` binary doesn't exist (only `python3`). On those systems, ensure `python` resolves to a 3.10+ interpreter before running `claude plugin install`.
+
+**macOS (Homebrew, ~5 min):**
+
+```bash
+# 1. Homebrew if you don't have it
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+
+# 2. Python 3.12
+brew install python@3.12
+
+# 3. Make the unversioned `python` resolve to 3.12 — Homebrew puts it in libexec
+echo 'export PATH="/opt/homebrew/opt/python@3.12/libexec/bin:$PATH"' >> ~/.zshrc
+source ~/.zshrc
+# Intel Mac: replace /opt/homebrew with /usr/local
+
+# 4. Verify
+python --version       # → Python 3.12.x
+which python           # → .../opt/homebrew/opt/python@3.12/libexec/bin/python
+
+# 5. Claude Code if you don't have it
+brew install claude-code
+# or: npm install -g @anthropic-ai/claude-code
+```
+
+**Linux:**
+
+```bash
+# Most distros: just symlink python to python3 (one of these will work)
+sudo ln -s "$(which python3)" /usr/local/bin/python
+# or: alias python=python3 in ~/.bashrc, then invoke claude from a subshell
+```
+
+**Windows:** typically nothing to do — modern Python installers create both `python.exe` and `python3.exe`.
+
+**Sanity test after install:** ask Claude to run `git push --force origin main`. With aether active, `aether_sanction` should return HOLD/REJECT against the seeded "Never force-push" belief instead of approving.
+
+**If the install seems to do nothing:**
+
+- Check `~/.aether/session_start.log` — every SessionStart fire writes one line. Empty file means the hook isn't firing (PATH issue with `python`); error lines tell you what failed.
+- Run `aether doctor` directly in a terminal. If `aether: command not found`, the pip install in the hook didn't run — confirm `python` resolves and that `pip install aether-core[mcp,graph,ml]` works manually.
+- For everything else, `aether doctor --report` produces a one-paste markdown bundle for filing a [GitHub issue](https://github.com/blockhead22/aether-core/issues/new).
+
 In a Claude session:
 
 ```
