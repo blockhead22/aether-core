@@ -143,6 +143,8 @@ claude
 
 State lives at `~/.aether/mcp_state.json` (override with `AETHER_STATE_PATH`). It is a plain JSON file — `cat` it, grep it, delete it, version-control a sanitized copy. There is no remote service involved.
 
+**Backups.** Every save snapshots the previous state file to `~/.aether/backups/mcp_state.{timestamp}.json` before overwriting, then atomic-writes the new state via `.tmp` + `os.replace` so a crash mid-write cannot leave the substrate half-written. Default depth is the 5 most recent rotations; override with `AETHER_BACKUP_KEEP=N` (or `=0` to disable). `AETHER_DISABLE_BACKUPS=1` skips rotation entirely. Restore is manual: `cp ~/.aether/backups/mcp_state.{timestamp}.json ~/.aether/mcp_state.json`. `aether doctor` reports the rotation depth and freshness of the newest backup.
+
 ## What's in the box
 
 ### 1. Governance: catch overconfidence at the boundary

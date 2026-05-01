@@ -460,6 +460,76 @@ def _doctor_substrate_activity(state_path: Optional[str]) -> dict:
     return {"status": "ok", "name": "substrate_activity", "messages": [msg]}
 
 
+def _doctor_backups(state_path: Optional[str]) -> dict:
+    """Confirm rotating backups exist and surface their freshness.
+
+    The substrate file is single-point-of-failure; without backups a
+    corrupt write or bad import takes the substrate with it. v0.12.10
+    introduced rotating backups in `{state_dir}/backups/` on every
+    save. This check verifies they're being written and warns if the
+    most recent one is stale (suggests `_rotate_backups` is no-op'ing
+    silently — possibly AETHER_DISABLE_BACKUPS=1 left set).
+    """
+    import time
+    from aether.mcp.state import _default_state_path
+    sp = Path(state_path or _default_state_path())
+    if not sp.exists():
+        return {
+            "status": "warn",
+            "name": "backups",
+            "messages": ["no state file yet — nothing to back up"],
+        }
+    backup_dir = sp.parent / "backups"
+    if not backup_dir.exists() or not backup_dir.is_dir():
+        return {
+            "status": "warn",
+            "name": "backups",
+            "messages": [
+                f"no backups directory at {backup_dir}",
+                "rotating backups land here on every save (v0.12.10+). "
+                "Will be created on the next write unless "
+                "AETHER_DISABLE_BACKUPS=1 is set.",
+            ],
+        }
+    backups = sorted(
+        backup_dir.glob(f"{sp.stem}.*.json"),
+        key=lambda p: p.stat().st_mtime,
+        reverse=True,
+    )
+    if not backups:
+        return {
+            "status": "warn",
+            "name": "backups",
+            "messages": [
+                f"backups directory exists but contains no rotations for "
+                f"{sp.stem}: {backup_dir}",
+            ],
+        }
+    newest_age_h = (time.time() - backups[0].stat().st_mtime) / 3600
+    state_age_h = (time.time() - sp.stat().st_mtime) / 3600
+    msgs = [
+        f"backup directory: {backup_dir}",
+        f"rotations on disk: {len(backups)}",
+        f"newest backup: {backups[0].name} ({newest_age_h:.1f}h ago)",
+    ]
+    # If the state file has been written more recently than the newest
+    # backup, rotation isn't firing. That's a regression worth flagging.
+    if state_age_h + 0.05 < newest_age_h:
+        # state newer than backup is normal (state just saved, backup
+        # is from the *previous* state). Only flag the inverse.
+        pass
+    if newest_age_h > state_age_h + 24:
+        return {
+            "status": "warn",
+            "name": "backups",
+            "messages": msgs + [
+                "newest backup is much older than the state file. Rotation "
+                "may have stopped — check AETHER_DISABLE_BACKUPS.",
+            ],
+        }
+    return {"status": "ok", "name": "backups", "messages": msgs}
+
+
 def _doctor_encoder() -> dict:
     """Probe the lazy encoder synchronously and report its state."""
     try:
@@ -576,6 +646,7 @@ def cmd_doctor(args) -> int:
         _doctor_install_imports(),
         _doctor_state_file(state_path),
         _doctor_substrate_activity(state_path),
+        _doctor_backups(state_path),
         _doctor_encoder(),
         _doctor_claude_code_hook(),
         _doctor_mcp_registration(),

@@ -17,12 +17,113 @@ Persistence: JSON serialization to disk.
 
 import json
 import os
+import shutil
 import time
 import uuid
 from dataclasses import dataclass, field, asdict
 from enum import Enum
 from typing import Optional, List, Dict, Tuple, Set
 from pathlib import Path
+
+
+# ---------------------------------------------------------------------------
+# Backup rotation (v0.12.10)
+# ---------------------------------------------------------------------------
+#
+# Each save() rotates the previous state file to a timestamped backup
+# in a sibling `backups/` directory before overwriting. Default: keep
+# the 5 most recent. Override via env vars:
+#   AETHER_BACKUP_KEEP=N      # rotation depth (default 5; 0 disables)
+#   AETHER_DISABLE_BACKUPS=1  # skip rotation entirely
+
+_DEFAULT_BACKUP_KEEP = 5
+_TRUTHY = {"1", "true", "yes", "on"}
+
+
+def _backup_disabled() -> bool:
+    return os.environ.get("AETHER_DISABLE_BACKUPS", "").strip().lower() in _TRUTHY
+
+
+def _backup_keep() -> int:
+    raw = os.environ.get("AETHER_BACKUP_KEEP", "").strip()
+    if not raw:
+        return _DEFAULT_BACKUP_KEEP
+    try:
+        n = int(raw)
+    except ValueError:
+        return _DEFAULT_BACKUP_KEEP
+    return max(0, n)
+
+
+def _rotate_backups(state_path: str) -> Optional[str]:
+    """Snapshot the current state file before overwrite.
+
+    Copies state_path -> ``{parent}/backups/{stem}.{timestamp}.json``,
+    then prunes the directory down to the most recent N (mtime sort).
+    No-op if the file doesn't exist yet, AETHER_DISABLE_BACKUPS is
+    set, or AETHER_BACKUP_KEEP=0. Returns the backup path written
+    (None on no-op or failure).
+    """
+    if _backup_disabled():
+        return None
+    if not os.path.exists(state_path):
+        return None  # first save — nothing to back up yet
+    keep = _backup_keep()
+    if keep <= 0:
+        return None
+
+    state_p = Path(state_path)
+    backup_dir = state_p.parent / "backups"
+    try:
+        backup_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        return None
+
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    backup_path = backup_dir / f"{state_p.stem}.{stamp}.json"
+    if backup_path.exists():
+        # Multiple saves in the same second — disambiguate so we
+        # don't clobber an earlier backup from this same second.
+        backup_path = backup_dir / (
+            f"{state_p.stem}.{stamp}.{uuid.uuid4().hex[:6]}.json"
+        )
+
+    try:
+        shutil.copy2(state_path, backup_path)
+    except OSError:
+        return None
+
+    # Prune: keep the N newest by mtime, drop the rest.
+    try:
+        existing = sorted(
+            backup_dir.glob(f"{state_p.stem}.*.json"),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        for old in existing[keep:]:
+            try:
+                old.unlink()
+            except OSError:
+                pass
+    except OSError:
+        pass
+
+    return str(backup_path)
+
+
+def _atomic_write_json(path: str, data: dict) -> None:
+    """Write ``data`` as JSON to ``path`` atomically.
+
+    Writes to ``{path}.tmp`` first, then ``os.replace`` to swap.
+    On a crash mid-write, the original file is preserved untouched
+    and the .tmp leftover is harmless. ``os.replace`` is atomic on
+    POSIX; on Windows it overwrites cleanly even when the target
+    exists, which ``os.rename`` does not.
+    """
+    tmp_path = path + ".tmp"
+    with open(tmp_path, "w") as f:
+        json.dump(data, f, indent=2, default=str)
+    os.replace(tmp_path, path)
 
 try:
     import networkx as nx
@@ -417,8 +518,12 @@ class MemoryGraph:
 
         # Save embeddings separately as .npy if numpy available
         os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
-        with open(path, 'w') as f:
-            json.dump(data, f, indent=2, default=str)
+        # Snapshot the previous state file (no-op on first save) so a
+        # corrupt write or bad import is recoverable from sibling
+        # backups/. Then atomic-write so a crash mid-write can't
+        # leave the substrate half-written.
+        _rotate_backups(path)
+        _atomic_write_json(path, data)
 
         if HAS_NUMPY and self._embeddings:
             emb_path = path.replace('.json', '_embeddings.npz')
