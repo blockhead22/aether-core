@@ -270,6 +270,67 @@ def _looks_like_garbage(text: str) -> bool:
     return False
 
 
+# A captured clause may run past its natural sentence boundary because
+# the rule patterns terminate on `[.,;\n!?]` only. "my name is nick and
+# my favorite color is orange" produces one frankencapture; "we use
+# Postgres because Redis was slow" leaks the rationale into the fact.
+# Trim at conjunctions that introduce a new clause subject (and-my,
+# and-i, and-we, but-..., because-..., so-...) so list-continuations
+# like "Postgres and Redis" are preserved intact.
+_CLAUSE_BOUNDARY = re.compile(
+    r"\s+(?:and|plus)\s+(?=(?:i|i'm|i've|my|we|we're|we've|the|this|that)\b)"
+    r"|\s+(?:but|so|because|though|although|while|whereas)\s+",
+    re.IGNORECASE,
+)
+
+
+def _trim_at_clause_boundary(snippet: str) -> str:
+    """Cut a captured clause at the first new-clause boundary.
+
+    "nick and my favorite color is orange" -> "nick"
+    "Postgres and Redis"                   -> "Postgres and Redis"
+    "Anthropic but we use Claude"          -> "Anthropic"
+    """
+    m = _CLAUSE_BOUNDARY.search(snippet)
+    return snippet[:m.start()].rstrip() if m else snippet
+
+
+# Interrogative openers — used to suppress matches that fire inside a
+# question. "does it work even if I don't call it." is NOT a constraint
+# even though the regex sees `don't call it`. Sentences ending in `?`
+# are also questions; we accept either signal.
+_INTERROGATIVE_OPENERS = (
+    "does ", "do ", "did ", "is ", "are ", "was ", "were ",
+    "am ", "can ", "could ", "will ", "would ", "should ",
+    "shall ", "may ", "might ", "must ", "has ", "have ", "had ",
+    "why ", "how ", "what ", "when ", "where ", "who ", "whom ",
+    "whose ", "which ",
+)
+
+
+def _is_inside_question(text: str, match_start: int) -> bool:
+    """True if the match position is inside an interrogative sentence.
+
+    Walks back from match_start to the previous sentence break, then
+    checks whether the carrying sentence opens with a question word
+    or terminates on `?`.
+    """
+    sentence_start = 0
+    for i in range(match_start, 0, -1):
+        if text[i - 1] in ".!?\n":
+            sentence_start = i
+            break
+    sentence_end = len(text)
+    for i in range(match_start, len(text)):
+        if text[i] in ".!?\n":
+            sentence_end = i + 1
+            break
+    sentence = text[sentence_start:sentence_end].strip().lower()
+    if sentence.endswith("?"):
+        return True
+    return sentence.startswith(_INTERROGATIVE_OPENERS)
+
+
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
@@ -311,7 +372,10 @@ def extract_facts(
     if user_message:
         for label, source, trust, pat in USER_RULES:
             for m in pat.finditer(user_message):
+                if _is_inside_question(user_message, m.start()):
+                    continue
                 snippet = (m.group(1) or "").strip(" ,.;:")
+                snippet = _trim_at_clause_boundary(snippet).strip(" ,.;:")
                 if _looks_like_garbage(snippet):
                     continue
                 # Reconstruct a normalized fact text. For corrections
@@ -329,7 +393,10 @@ def extract_facts(
     if assistant_response:
         for label, source, trust, pat in ASSISTANT_RULES:
             for m in pat.finditer(assistant_response):
+                if _is_inside_question(assistant_response, m.start()):
+                    continue
                 snippet = (m.group(1) or "").strip(" ,.;:")
+                snippet = _trim_at_clause_boundary(snippet).strip(" ,.;:")
                 if _looks_like_garbage(snippet):
                     continue
                 rebuilt = _rebuild_for_signal(label, snippet)
