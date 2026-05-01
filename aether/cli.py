@@ -720,6 +720,77 @@ def _build_report(results: list, state_path: Optional[str]) -> str:
     return "\n".join(lines)
 
 
+def cmd_warmup(args) -> int:
+    """Eagerly pull the encoder model so the first MCP call doesn't pay
+    the load cost — and so install failures (HuggingFace Hub unreachable,
+    sentence-transformers missing, etc.) surface immediately instead of
+    silently leaving the substrate in cold mode.
+
+    Run this once after `pip install aether-core[ml]` to verify the
+    full setup works. Re-run any time `aether doctor` reports the
+    encoder as warn/fail.
+    """
+    try:
+        from aether._lazy_encoder import LazyEncoder
+    except ImportError as e:
+        print(f"FAIL: encoder module unavailable: {e}", file=sys.stderr)
+        print("install via: pip install aether-core[ml]", file=sys.stderr)
+        return 1
+
+    timeout = float(getattr(args, "timeout", 120) or 120)
+    print(
+        f"loading sentence-transformers model "
+        f"(timeout={timeout:.0f}s) — this can take a minute on first run "
+        f"if the model is not yet cached."
+    )
+    enc = LazyEncoder()
+    enc.start_warmup()
+    ready = enc.wait_until_ready(timeout=timeout)
+
+    if ready:
+        print(f"{_OK} encoder loaded: {enc.model_name}")
+        return 0
+
+    # Failure path: surface the most recent reason from the log so the
+    # user does not have to dig.
+    print(f"{_FAIL} encoder warmup did not complete", file=sys.stderr)
+    log_path = Path.home() / ".aether" / "encoder_warmup.log"
+    if log_path.exists():
+        try:
+            tail = log_path.read_text(encoding="utf-8").splitlines()[-3:]
+            print("recent encoder_warmup.log:", file=sys.stderr)
+            for line in tail:
+                print(f"  {line}", file=sys.stderr)
+        except OSError:
+            pass
+    print("", file=sys.stderr)
+    print("remediation:", file=sys.stderr)
+    if enc.is_unavailable:
+        print(
+            "  - if HuggingFace Hub was unreachable: retry on a network "
+            "with access to huggingface.co, or pre-download the model "
+            "elsewhere and copy the contents of ~/.cache/huggingface/",
+            file=sys.stderr,
+        )
+        print(
+            "  - if sentence-transformers is missing: "
+            "pip install aether-core[ml]",
+            file=sys.stderr,
+        )
+    else:
+        print(
+            f"  - increase timeout: aether warmup --timeout {int(timeout)*2}",
+            file=sys.stderr,
+        )
+    print(
+        "  - the substrate still works in cold mode (substring + token "
+        "overlap); warm-mode grounding just won't reach its accuracy "
+        "thresholds",
+        file=sys.stderr,
+    )
+    return 1
+
+
 def cmd_doctor(args) -> int:
     state_path = getattr(args, "state_path", None)
     results = [
@@ -820,6 +891,15 @@ def build_parser() -> argparse.ArgumentParser:
                        help="emit a self-contained markdown bug-report bundle "
                             "(env + checks + log tails) for pasting into a GitHub issue")
     p_doc.set_defaults(func=cmd_doctor)
+
+    # warmup (v0.12.12) — eagerly pull the encoder model
+    p_warm = sub.add_parser(
+        "warmup",
+        help="eagerly load the embedding model and report install issues",
+    )
+    p_warm.add_argument("--timeout", type=float, default=120.0,
+                        help="seconds to wait for the load (default 120)")
+    p_warm.set_defaults(func=cmd_warmup)
 
     return p
 

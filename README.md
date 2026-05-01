@@ -64,6 +64,11 @@ claude plugin install github.com/blockhead22/aether-core
 # 3. Confirm everything is wired
 aether doctor
 # expected: 6 ok, 0 warn, 0 fail
+
+# 4. (optional) Eagerly pull the embedding model so the first
+#    MCP call doesn't pay the load cost. Surfaces install issues
+#    (HF Hub unreachable, [ml] extra missing) immediately.
+aether warmup
 ```
 
 In a Claude session:
