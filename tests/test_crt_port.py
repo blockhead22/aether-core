@@ -202,3 +202,90 @@ def test_memory_source_enum_includes_user_and_fallback():
     values = {s.value for s in MemorySource}
     assert "user" in values
     assert "fallback" in values
+
+
+# ── Grok-improvement regression tests ─────────────────────────────────
+
+
+def test_negation_bidirectional(crt: CRTMath):
+    """Negation detector fires when *prior* negates and new affirms."""
+    is_contra, reason = crt.detect_contradiction(
+        drift=0.3,
+        confidence_new=0.9,
+        confidence_prior=0.9,
+        source=MemorySource.USER,
+        text_new="I work at a coffee shop",
+        text_prior="I don't work at a coffee shop",
+    )
+    assert is_contra is True
+    assert "negat" in reason.lower()
+
+
+def test_negation_temporal_suppression(crt: CRTMath):
+    """'Used to X' → 'don't X' is a legitimate update, not a contradiction."""
+    is_contra, reason = crt.detect_contradiction(
+        drift=0.25,
+        confidence_new=0.9,
+        confidence_prior=0.9,
+        source=MemorySource.USER,
+        text_new="I don't work at a coffee shop now",
+        text_prior="I used to work at a coffee shop",
+    )
+    assert is_contra is False, f"temporal update falsely flagged: {reason!r}"
+
+
+def test_numerical_contradiction(crt: CRTMath):
+    """Different numbers in similar context should flag."""
+    is_contra, reason = crt.detect_contradiction(
+        drift=0.2,
+        confidence_new=0.9,
+        confidence_prior=0.9,
+        source=MemorySource.USER,
+        text_new="I am 42 years old",
+        text_prior="I am 35 years old",
+    )
+    assert is_contra is True
+    assert "numerical" in reason.lower()
+
+
+def test_antonym_contradiction(crt: CRTMath):
+    """Classic polarity flip caught by antonym table."""
+    is_contra, reason = crt.detect_contradiction(
+        drift=0.2,
+        confidence_new=0.9,
+        confidence_prior=0.9,
+        source=MemorySource.USER,
+        text_new="The food there is good",
+        text_prior="The food there is bad",
+    )
+    assert is_contra is True
+    assert "antonym" in reason.lower()
+
+
+def test_preference_target_no_slot_no_fire(crt: CRTMath):
+    """Without a single-value slot, 'like X' vs 'like Y' should NOT flag."""
+    is_contra, _ = crt.detect_contradiction(
+        drift=0.2,
+        confidence_new=0.9,
+        confidence_prior=0.9,
+        source=MemorySource.USER,
+        text_new="I like hiking in the mountains",
+        text_prior="I like swimming in the ocean",
+        slot=None,
+    )
+    assert is_contra is False
+
+
+def test_preference_target_single_value_slot_fires(crt: CRTMath):
+    """With a single-value slot like 'favorite_hobby', target change SHOULD flag."""
+    is_contra, reason = crt.detect_contradiction(
+        drift=0.2,
+        confidence_new=0.9,
+        confidence_prior=0.9,
+        source=MemorySource.USER,
+        text_new="I like hiking in the mountains",
+        text_prior="I like swimming in the ocean",
+        slot="favorite_hobby",
+    )
+    assert is_contra is True
+    assert "single-value" in reason.lower() or "target" in reason.lower()

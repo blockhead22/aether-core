@@ -28,6 +28,19 @@ from difflib import SequenceMatcher
 import math
 import re
 
+ANTONYMS = {
+    "love": {"hate", "dislike"},
+    "like": {"dislike", "hate"},
+    "hate": {"love", "like"},
+    "dislike": {"like", "love"},
+    "prefer": {"hate", "dislike"},
+    "enjoy": {"hate", "dislike"},
+    "good": {"bad", "terrible", "awful"},
+    "bad": {"good", "great"},
+    "always": {"never"},
+    "never": {"always"},
+}
+
 # Transient state cues (mood/energy/temporary condition).
 _TRANSIENT_STATE_WORDS = {
     "tired", "exhausted", "fatigued", "sleepy", "burned out",
@@ -764,92 +777,105 @@ class CRTMath:
     ) -> Tuple[bool, str]:
         """
         Detect if contradiction event should be triggered.
- 
-        Now includes paraphrase tolerance to reduce false positives.
-        Additional fast-path checks catch entity swaps and preference inversions.
- 
-        Triggers:
-        0. Entity swap / preference inversion heuristics
-        1. Paraphrase check - same meaning despite drift shouldn't flag
-        2. D_mean > θ_contra
-        3. (Δc > θ_drop AND D_mean > θ_min)
-        4. (src == fallback AND D_mean > θ_fallback)
- 
+
+        Fast-path heuristics (order matters):
+        0a. Entity swap (proper-noun slot values)
+        0b. Negation (bidirectional + temporal-update filter)
+        0c. Preference / boolean inversion (slot-aware)
+        0d. Numerical / quantifier mismatch
+        0e. Antonym polarity flip
+        0f. Paraphrase tolerance (escape valve before drift rules)
+        Semantic rules:
+        1. D_mean > θ_contra
+        2. (Δc > θ_drop AND D_mean > θ_min)
+        3. (src == fallback AND D_mean > θ_fallback)
+
         Returns (is_contradiction, reason)
         """
         cfg = self.config
 
-        # Rule 0a: Entity swap detection (same slot, different proper noun values)
+        # Rule 0a: Entity swap (same slot, different proper-noun values)
         entity_swap, entity_reason = self._detect_entity_swap(slot, value_new, value_prior, text_new, text_prior)
         if entity_swap:
             return True, entity_reason
 
-        # Rule 0b: Negation contradiction detection ("don't work at X" vs "work at X")
+        # Rule 0b: Negation contradiction (bidirectional + temporal filter)
         negation_detected, negation_reason = self._detect_negation_contradiction(text_new, text_prior)
         if negation_detected:
             return True, negation_reason
 
-        # Rule 0c: Preference/boolean inversion detection (prefer X vs prefer Y / hate X)
-        inversion_detected, inversion_reason = self._is_boolean_inversion(text_new, text_prior)
+        # Rule 0c: Preference / boolean inversion (slot-aware)
+        inversion_detected, inversion_reason = self._is_boolean_inversion(text_new, text_prior, slot)
         if inversion_detected:
             return True, inversion_reason
 
-        # Rule 0c: Paraphrase tolerance (reduce false positives)
+        # Rule 0d: Numerical / quantifier contradiction
+        num_contra, num_reason = self._detect_numerical_contradiction(text_new, text_prior)
+        if num_contra:
+            return True, num_reason
+
+        # Rule 0e: Antonym polarity flip
+        antonym_contra, antonym_reason = self._detect_antonym_contradiction(text_new, text_prior)
+        if antonym_contra:
+            return True, antonym_reason
+
+        # Rule 0f: Paraphrase tolerance (escape valve before drift rules)
         if text_new and text_prior and drift > 0.35:
             if self._is_likely_paraphrase(text_new, text_prior, drift):
                 return False, f"Paraphrase detected (drift={drift:.3f}, not contradiction)"
 
         # Rule 1: High drift
         if drift > cfg.theta_contra:
-            return True, f"High drift: {drift:.3f} > {cfg.theta_contra}"
+            return True, f"High semantic drift: {drift:.3f} > {cfg.theta_contra}"
 
         # Rule 2: Confidence drop with moderate drift
         delta_c = confidence_prior - confidence_new
         if delta_c > cfg.theta_drop and drift > cfg.theta_min:
-            return True, f"Confidence drop: Δc={delta_c:.3f}, drift={drift:.3f}"
+            return True, f"Significant confidence drop: Δc={delta_c:.3f}, drift={drift:.3f}"
 
         # Rule 3: Fallback source with drift
         if source in {MemorySource.FALLBACK, MemorySource.LLM_OUTPUT} and drift > cfg.theta_fallback:
-            return True, f"Fallback drift: {drift:.3f} > {cfg.theta_fallback}"
+            return True, f"Fallback source drift: {drift:.3f} > {cfg.theta_fallback}"
 
         return False, "No contradiction"
     
     def _is_likely_paraphrase(self, text_new: str, text_prior: str, drift: float) -> bool:
-        """
-        Check if two texts are paraphrases despite semantic drift.
-        
-        Heuristics:
-        1. Same key entities/numbers
-        2. Drift is moderate (0.35-0.50 range)
-        3. High overlap in key elements
-        """
-        # Only check moderate drift range (paraphrases shouldn't have extreme drift)
-        if drift < 0.35 or drift > 0.50:
+        """Jaccard similarity on content words + key-element extraction."""
+        if drift < 0.35 or drift > 0.60:
             return False
-        
+
+        def normalize_and_tokenize(text: str) -> set:
+            cleaned = re.sub(r"[^a-z0-9\s]", " ", text.lower())
+            tokens = cleaned.split()
+            stopwords = {"a", "an", "the", "to", "in", "of", "on", "for", "with", "at",
+                         "my", "your", "our", "their", "his", "her", "i", "me", "you", "we", "they"}
+            return {t for t in tokens if t and t not in stopwords}
+
+        words_new = normalize_and_tokenize(text_new)
+        words_prior = normalize_and_tokenize(text_prior)
+
+        if not words_new or not words_prior:
+            return False
+
+        intersection = len(words_new & words_prior)
+        union = len(words_new | words_prior)
+        jaccard = intersection / union if union > 0 else 0
+
         def extract_key_elements(text: str) -> set:
-            """Extract numbers and proper nouns as key elements."""
-            numbers = set(re.findall(r'\d+', text))
-            # Proper nouns (capitalized words not at sentence start)
-            caps = set(re.findall(r'(?<!^)(?<!\. )[A-Z][a-z]+', text))
-            return numbers | caps
-        
+            numbers = set(re.findall(r'\d+(?:\.\d+)?', text))
+            dates = set(re.findall(r'\b\d{4}\b|\b\d{1,2}/\d{1,2}/\d{2,4}\b', text))
+            proper = set(re.findall(r'(?<!^)(?<!\. )\b[A-Z][a-z]+(?:\s+[A-Z][a-z]+)*\b', text))
+            return numbers | dates | proper
+
         keys_new = extract_key_elements(text_new)
         keys_prior = extract_key_elements(text_prior)
 
-        # Explicit numeric mismatch: if both contain numbers and they differ, do not treat as paraphrase
-        nums_new = set(re.findall(r'\d+', text_new))
-        nums_prior = set(re.findall(r'\d+', text_prior))
-        if nums_new and nums_prior and nums_new != nums_prior:
+        if (keys_new or keys_prior) and keys_new != keys_prior:
             return False
-        
-        # If key elements overlap significantly, likely paraphrase
-        if keys_new and keys_prior:
-            overlap = len(keys_new & keys_prior) / max(len(keys_new | keys_prior), 1)
-            if overlap > 0.7:
-                return True
-        
-        return False
+
+        key_overlap = len(keys_new & keys_prior) / max(len(keys_new | keys_prior), 1) if keys_new or keys_prior else 1.0
+
+        return jaccard > 0.65 or key_overlap > 0.75
 
     def _detect_entity_swap(
         self,
@@ -895,8 +921,8 @@ class CRTMath:
         tokens = re.findall(r"[A-Za-z][\w.&'-]*", value)
         return any(token[0].isupper() or token.isupper() for token in tokens)
 
-    def _is_boolean_inversion(self, text_new: str, text_prior: str) -> Tuple[bool, str]:
-        """Detect preference/boolean inversions such as prefer X vs prefer Y or like vs dislike X."""
+    def _is_boolean_inversion(self, text_new: str, text_prior: str, slot: Optional[str] = None) -> Tuple[bool, str]:
+        """Detect preference/boolean inversions. Slot-aware: 'target changed' only fires for single-value slots."""
         if not text_new or not text_prior:
             return False, ""
 
@@ -910,22 +936,19 @@ class CRTMath:
                 (r"\bhate[s]?\s+(?P<obj>[^.;,!?:\n]+)", "dislike"),
                 (r"\bavoid[s]?\s+(?P<obj>[^.;,!?:\n]+)", "dislike"),
             ]
-
             preferences: List[Tuple[str, str]] = []
             lowered = text.lower()
             for pattern, label in patterns:
                 for match in re.finditer(pattern, lowered):
                     obj = match.group("obj").strip()
-                    # Trim trailing connectors to isolate the preference object
                     obj = re.split(r"\b(but|however|though|although)\b", obj)[0].strip()
                     preferences.append((label, obj))
             return preferences
 
         def normalize_obj(obj: str) -> str:
-            # Remove punctuation and stopwords to compare preference targets
             cleaned = re.sub(r"[^a-z0-9 ]+", " ", obj.lower())
             stopwords = {"a", "an", "the", "to", "in", "of", "on", "for", "with", "at", "my", "your", "our", "their", "his", "her"}
-            return " ".join(word for word in cleaned.split() if word and word not in stopwords)
+            return " ".join(w for w in cleaned.split() if w and w not in stopwords)
 
         def polarity(label: str) -> int:
             return 1 if label in {"prefer", "like"} else -1
@@ -944,6 +967,8 @@ class CRTMath:
         if not prefs_new or not prefs_prior:
             return False, ""
 
+        is_single_value_slot = slot and any(k in slot.lower() for k in ("favorite", "current", "primary", "best", "main"))
+
         for label_new, obj_new_raw in prefs_new:
             obj_new = normalize_obj(obj_new_raw)
             if not obj_new:
@@ -958,61 +983,95 @@ class CRTMath:
 
                 same_target = objects_match(obj_new, obj_prior)
                 if same_target and pol_new != pol_prior:
-                    return True, f"Preference inversion on '{obj_new}'"
+                    return True, f"Preference polarity inversion on '{obj_new}'"
 
-                # Prefer X vs prefer Y (both positive but different targets)
-                if pol_new == pol_prior == 1 and not same_target:
-                    return True, "Preference target changed"
+                if pol_new == pol_prior == 1 and not same_target and is_single_value_slot:
+                    return True, f"Preference target changed in single-value slot '{slot}'"
 
         return False, ""
 
     def _detect_negation_contradiction(self, text_new: str, text_prior: str) -> Tuple[bool, str]:
-        """
-        Detect negation-based contradictions.
-        
-        Patterns:
-        - "I don't X" vs "I X"
-        - "I no longer X" vs "I X"
-        - "not X anymore" vs "X"
-        """
+        """Bidirectional negation detection with temporal-update suppression."""
         if not text_new or not text_prior:
             return False, ""
-        
-        text_new_lower = text_new.lower()
-        text_prior_lower = text_prior.lower()
-        
-        # Negation patterns
+
+        t_new = text_new.lower()
+        t_prior = text_prior.lower()
+
         negation_patterns = [
-            (r"(?:i\s+)?(?:don'?t|do\s+not|no\s+longer|not\s+anymore)\s+(\w+(?:\s+\w+){0,3})", "negated"),
-            (r"(?:i\s+)?(?:stopped|quit|left|no\s+longer)\s+(\w+(?:\s+\w+){0,3})", "ceased"),
-            (r"(?:i'm\s+not|i\s+am\s+not)\s+(\w+(?:\s+\w+){0,3})", "negated_state"),
+            r"(?:i\s+)?(?:don'?t|do\s+not|no\s+longer|not\s+anymore|never)\s+(\w+(?:\s+\w+){0,4})",
+            r"(?:i\s+)?(?:stopped|quit|left|gave up|no longer)\s+(\w+(?:\s+\w+){0,4})",
+            r"(?:i'?m|i am)\s+not\s+(\w+(?:\s+\w+){0,3})",
         ]
-        
-        # Extract negated actions/states from new text
-        negated_items = []
-        for pattern, neg_type in negation_patterns:
-            for match in re.finditer(pattern, text_new_lower):
-                negated_items.append((match.group(1).strip(), neg_type))
-        
-        if not negated_items:
+
+        temporal_update_markers = {"used to", "formerly", "previously", "before", "now", "these days"}
+
+        def extract_negated_actions(text: str) -> set:
+            actions = set()
+            for pat in negation_patterns:
+                for m in re.finditer(pat, text):
+                    actions.add(m.group(1).strip())
+            return actions
+
+        def has_negation(text: str) -> bool:
+            return any(re.search(p, text) for p in negation_patterns)
+
+        def action_affirmed_in(action: str, text: str) -> bool:
+            words = action.split()[:3]
+            pattern = r'\b' + r'\s+'.join(re.escape(w) for w in words) + r'\b'
+            return bool(re.search(pattern, text))
+
+        def check_direction(negated_text: str, affirming_text: str, direction: str) -> Tuple[bool, str]:
+            actions = extract_negated_actions(negated_text)
+            if not actions:
+                return False, ""
+            for action in actions:
+                if action_affirmed_in(action, affirming_text) and not has_negation(affirming_text):
+                    if any(marker in t_new or marker in t_prior for marker in temporal_update_markers):
+                        return False, ""
+                    return True, f"Negation contradiction ({direction}): '{action}'"
             return False, ""
-        
-        # Check if prior text affirms any of the negated items
-        for item, neg_type in negated_items:
-            # Clean item for matching
-            item_words = item.split()[:3]  # First 3 words
-            item_pattern = r'\b' + r'\s+'.join(re.escape(w) for w in item_words) + r'\b'
-            
-            # Check if prior affirms this (without negation)
-            if re.search(item_pattern, text_prior_lower):
-                # Verify prior doesn't also negate it
-                prior_negated = any(
-                    re.search(p[0], text_prior_lower) 
-                    for p in negation_patterns
-                )
-                if not prior_negated:
-                    return True, f"Negation contradiction: '{item}' negated in new, affirmed in prior"
-        
+
+        found, reason = check_direction(t_new, t_prior, "new negates prior")
+        if found:
+            return True, reason
+        return check_direction(t_prior, t_new, "prior negates new")
+
+    def _detect_numerical_contradiction(self, text_new: str, text_prior: str) -> Tuple[bool, str]:
+        """Catches differing numbers when surrounding text context overlaps.
+        Limitation: may fire on log-line timestamps or similarity scores —
+        callers processing structured output should pre-filter those.
+        """
+        nums_new = re.findall(r'\d+(?:\.\d+)?', text_new)
+        nums_prior = re.findall(r'\d+(?:\.\d+)?', text_prior)
+        if not nums_new or not nums_prior or nums_new == nums_prior:
+            return False, ""
+
+        words_new = set(re.sub(r"[^a-z0-9 ]", " ", text_new.lower()).split())
+        words_prior = set(re.sub(r"[^a-z0-9 ]", " ", text_prior.lower()).split())
+        stopwords = {"a", "an", "the", "to", "in", "of", "on", "for", "with", "at", "i", "me"}
+        content_new = words_new - stopwords
+        content_prior = words_prior - stopwords
+        overlap = len(content_new & content_prior) / max(len(content_new | content_prior), 1)
+
+        if overlap > 0.5:
+            return True, f"Numerical contradiction: {nums_prior} vs {nums_new}"
+        return False, ""
+
+    def _detect_antonym_contradiction(self, text_new: str, text_prior: str) -> Tuple[bool, str]:
+        """Catches classic polarity flips using the ANTONYMS table."""
+        if not text_new or not text_prior:
+            return False, ""
+
+        t_new = text_new.lower()
+        t_prior = text_prior.lower()
+
+        for word, opposites in ANTONYMS.items():
+            if word in t_new and any(opp in t_prior for opp in opposites):
+                return True, f"Antonym contradiction: '{word}' vs its opposite in prior text"
+            if word in t_prior and any(opp in t_new for opp in opposites):
+                return True, f"Antonym contradiction: '{word}' vs its opposite in new text"
+
         return False, ""
     
     # ========================================================================
