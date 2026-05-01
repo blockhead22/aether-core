@@ -1,12 +1,12 @@
-# Aether — next session handoff (after 2026-04-30 evening)
+# Aether — next session handoff (after 2026-04-30 marathon)
 
 ## Where we are
 
-`aether-core` is at **v0.12.8** on origin master, commit pending. **362+ tests pass**, zero xfail, CI green on master.
+`aether-core` is at **v0.12.12** on origin master, commit `4d27af3`. **413 unit tests pass**, 1 unrelated HF-offline failure, CI green on master.
 
-Today (2026-04-30) shipped **eight PyPI releases** total, each fixing or hardening a real finding the substrate-assisted dev loop surfaced:
+Today (2026-04-30) shipped **twelve PyPI releases** total. The first eight closed all original findings (F#1–F#10) and made the substrate structurally complete. The last four (v0.12.9–v0.12.12, after the prod-readiness audit) closed five hygiene gaps required for "ready for real users":
 
-| Version | What | Findings closed |
+| Version | What | Findings / gaps closed |
 |---|---|---|
 | 0.12.1 | E2E harness scaffold + v0.9.6 carry-overs (link helper, version stamp, [mcp] networkx, release.yml trigger) | F#1, F#2 |
 | 0.12.2 | Extended policy contradiction detection — IMPERATIVE_CUES covers real CLI forms; strong-trust override bypasses sim gate when belief trust ≥ 0.85 | F#4 |
@@ -16,6 +16,10 @@ Today (2026-04-30) shipped **eight PyPI releases** total, each fixing or hardeni
 | 0.12.6 | F#8 fix — encoder warmup no longer hangs in MCP subprocess (HF env vars + redirect_stdout/stderr around SentenceTransformer init + diagnostic log) | F#8 |
 | 0.12.7 | F#8 layer 1.5 — root cause was HF online check, not stdout; force offline mode when model is cached | (F#8 hardening) |
 | 0.12.8 | F#9 + F#10 fix — search() weights combined score by trust; inject_substrate_context filters trust=0 entries | F#9, F#10 |
+| 0.12.9 | Hygiene gap #1 + #2 — `AETHER_DISABLE_AUTOINGEST` env var + `redact_secrets()` regex layer (sk-, AKIA, ghp_, xox*, Stripe, bearer, PEM, password=…) before fact extraction | gap: opt-out + redaction |
+| 0.12.10 | Hygiene gap #3 — rotating backups (`{state_dir}/backups/{stem}.{timestamp}.json`) + atomic write (`.tmp` + os.replace). `AETHER_BACKUP_KEEP=N`, `AETHER_DISABLE_BACKUPS=1`. New `_doctor_backups` check. | gap: backup safety |
+| 0.12.11 | Hygiene gap #4 — `aether doctor --report` outputs a self-contained markdown bundle (env + checks + log tails) for one-paste GitHub issues. New `.github/ISSUE_TEMPLATE/bug_report.yml` form requires the bundle. | gap: useful bug reports |
+| 0.12.12 | Hygiene gap #5 — `aether warmup` CLI eagerly pulls the encoder model with clear remediation messaging (HF Hub guidance, `[ml]` extra hint, cold-mode-fallback reassurance). Run after `pip install` to surface install issues immediately. | gap: install-resilience messaging |
 
 E2E harness expanded from turns 1-2 → turns 1-10 (full scripted scenario). 9 full_loop tests + 4 smoke tests, all passing.
 
@@ -38,14 +42,26 @@ The auto-ingest Stop hook was fixed to actually read `transcript_path` (had been
 
 ## Strategic state
 
-The substrate is now **structurally complete** for in-session use:
+The substrate is now **structurally complete AND prod-ready for first-stranger trial**:
+
+Architecture (closed by v0.12.0–v0.12.8):
 - Auto-ingest fires after every turn → substrate grows on its own.
 - `_sync_first` decorator ensures the server picks up external writes on the next tool call.
-- `aether doctor` diagnoses install / hook / MCP / state-file issues in seconds.
+- `aether doctor` (now 7 checks) diagnoses install / hook / MCP / state-file / backup issues in seconds.
 - All read tools degrade gracefully on corrupt nodes.
 - All write tools sync from disk before mutating, so hook writes survive.
+- Search ranking weights by trust so demoted entries don't outrank canonical truths.
 
-The remaining gap is **richness, not architecture**. With 41 memories the substrate can't ground much; the value compounds at 1000+. The fix for that is just time + sessions — which the auto-ingest hook now does for free as long as you're working.
+Hygiene (closed by v0.12.9–v0.12.12):
+- `AETHER_DISABLE_AUTOINGEST=1` pauses the hook without uninstalling.
+- Common secrets (API keys, bearer tokens, PEM blocks, password=… forms) are redacted before reaching the substrate.
+- Every save snapshots the prior state to `~/.aether/backups/` (5 most recent by default), atomic-writes via `.tmp` + `os.replace`.
+- `aether doctor --report` produces a one-paste markdown bundle for GitHub issues, with a form-mode template that requires it.
+- `aether warmup` surfaces install-time encoder failures with clear remediation messaging.
+
+The only remaining gap is **N>1 user validation** — only solvable by getting an actual stranger to try this. Backup safety + opt-out + redaction + a one-paste bug-report path now make that meaningfully less scary as a first ask.
+
+The remaining technical gap is **richness, not architecture**. With 127 memories the substrate can't ground much; the value compounds at 1000+. The fix for that is just time + sessions — which the auto-ingest hook now does for free as long as you're working.
 
 ### Update 2026-04-30 evening — substrate now at 127 memories
 
@@ -85,25 +101,27 @@ OSS remains the main focus. Today's marathon proves the substrate-assisted dev l
 
 ## What we're working on next
 
-Three plausible threads, in priority order:
+The README was rewritten in commit `a84774c` with the concrete-hook + quickstart-cookbook structure. That priority is closed.
 
-### 1. README rewrite + onboarding (highest external leverage)
+Three plausible next threads, in priority order:
 
-The handoff has called for this for two sessions. With the architecture now stable and all findings closed, this is the bottleneck for adoption. Today's work proves the value-prop concretely; the README still reads like a feature list, not a "what this changes about your assistant" pitch.
+### 1. Validation chapter, test #1: fresh-session-no-context (highest external leverage)
 
-Concrete deliverables:
-- Top section: 3 sentences explaining why this exists. "The model is the mouth, the substrate is the self." cite something concrete from today (e.g. "F#7 was caught by the substrate auditing the substrate's own writes").
-- Quickstart: `pip install aether-core[mcp,graph,ml]` → claude plugin install → `aether doctor` → first remember → first sanction.
-- "What this catches that other tools don't": cross-session belief continuity, contradiction-as-signal, governance gate. Avoid "memory MCP" framing.
-- Drop or move: long lists of tools, internal architecture sections. Move to docs/.
+The substrate is now stable enough to collect external evidence rather than dogfood-only. Test #1 is the cheapest of the four NEXT_SESSION calls out: spin up a clean Claude session with no context injection, ask 5–10 standard questions, see what the substrate surfaces / blocks vs the no-substrate baseline. Concrete data → blog material → first non-dogfood validation point.
 
-### 2. Validation chapter
+The other three tests (N>1 user, cross-vendor, scale to 10k) are more involved. Test #1 unblocks them by establishing a methodology.
 
-Per prior handoffs: 4 tests — N>1 user, cross-vendor, fresh-session-no-context, scale (1k/10k memories). The substrate is now stable enough to start collecting external evidence rather than dogfood-only.
+### 2. Slot extractor name patterns
 
-### 3. Slot extractor name patterns
+OSS extractor returns empty for "My name is Nick" / "I am Nick" patterns; production CRT layers have `user.name` slots. Adding a name pattern bank (~30 lines) closes the gap and lets the slot-equality detector catch the canonical Nick↔Aether case the v0.12 audit cited. The merged substrate already has 9 distinct `user.name` values waiting for it to fire.
 
-Production CRT layers have `user.name` slots; OSS extractor returns empty for "My name is Nick" / "I am Nick" patterns. Adding a name pattern bank (~30 lines) closes the gap and lets the slot-equality detector catch the canonical Nick<>Aether case the v0.12 audit cited.
+### 3. Resolve imported slot conflicts (substrate hygiene)
+
+The merged substrate has 15 `user.occupation` values, 9 names, 9 favorite colors with the LLM hallucinations mixed in. Now that F#10 ranks them correctly, an `aether_correct` sweep is straightforward — demote the obvious garbage, promote the real ones. Cleaner demo substrate for blog screenshots / validation chapter. Could do it from the CLI in one pass.
+
+### 4. Blog post: "I built a substrate that caught itself shipping bugs"
+
+Today's twelve-release marathon adds 5 fresh dogfood data points to the existing list. README rewrite + the prod-readiness gap closure narrative is writable now. High external leverage.
 
 ## Open findings
 
@@ -146,16 +164,22 @@ python bench/run_fidelity_bench.py --cold     # cold 21/29
 # Substrate state
 aether status
 
+# Pre-flight encoder check (v0.12.12)
+aether warmup                                      # eager model pull, surfaces install issues
+
 # Verify latest publish
 pip install --upgrade aether-core
-python -c "import aether; print(aether.__version__)"   # should print 0.12.5
+python -c "import aether; print(aether.__version__)"   # should print 0.12.12
+
+# One-paste bug-report bundle (v0.12.11)
+aether doctor --report                             # markdown for GitHub issues
 ```
 
 ## First moves for next session
 
-1. **Run `aether doctor`** to confirm everything is wired correctly. If anything is FAIL or WARN, address before continuing.
-2. **Pick one of the three threads above.** README rewrite is the highest external leverage.
-3. **Check `aether_search`** for memories the auto-ingest captured since last connect. The substrate should be richer than it was — that's a material data point for the README pitch.
+1. **Run `aether doctor`** to confirm all 7 checks are OK. If anything is FAIL or WARN, address before continuing — `aether doctor --report` produces a one-paste bundle if you need to file an issue.
+2. **Pick one of the four threads above.** Validation chapter test #1 is the highest external leverage now that the README + prod-readiness work is shipped.
+3. **Check `aether_search`** for memories the auto-ingest captured since last connect. The substrate should be richer than it was — every working session contributes for free.
 
 ## What stays closed
 
@@ -166,4 +190,4 @@ python -c "import aether; print(aether.__version__)"   # should print 0.12.5
 
 ---
 
-*This doc replaces the v0.12.0 / v0.12.1 handoffs. Strategic context (OSS-as-main-focus) unchanged. Today shipped five PyPI releases, closed all seven open findings, fixed the auto-ingest hook (3-day silent bug), and added a diagnostic command (`aether doctor`) that prevents the same class of silent bug from happening again. The substrate is now structurally complete; growth and onboarding are the remaining work.*
+*Today shipped twelve PyPI releases. The first eight closed all original findings (F#1–F#10) and made the substrate structurally complete. The last four (v0.12.9–v0.12.12) closed five prod-readiness hygiene gaps surfaced by an explicit "ready for real users" audit: opt-out env var, secret redaction, rotating backups + atomic write, one-paste bug-report bundle + GitHub issue template, and an `aether warmup` CLI for install-time encoder failures. Strategic context (OSS-as-main-focus) unchanged. The remaining gap is N>1 user validation — the only one that pure code cannot solve.*
