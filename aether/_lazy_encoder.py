@@ -26,14 +26,58 @@ unavailable nearly instantly. Same fallback as before.
 Process-wide cache (`_MODEL_CACHE`) means multiple `LazyEncoder` instances
 for the same model share one load. The lock serializes first-load attempts
 to avoid duplicate torch imports.
+
+F#8 fix (v0.12.6): in MCP-subprocess contexts, the warmup thread used to
+silently hang. SentenceTransformer.__init__ + transformers writes progress
+messages and warnings to stdout/stderr by default. When the host process is
+Claude Code (which expects MCP wire-protocol messages on stdout), those
+writes corrupt the protocol and can stall the load thread on a backed-up
+pipe. Three defenses applied here:
+
+    1. Quiet HuggingFace at module-load via env vars (no tqdm progress, no
+       transformers warnings, no tokenizer parallelism noise).
+    2. Redirect stdout + stderr inside the load itself, so any remaining
+       output from torch / sentence-transformers / huggingface_hub is
+       captured to a buffer and discarded.
+    3. Broaden the warmup except clause to `BaseException` so any failure
+       (including KeyboardInterrupt-shaped surprises) sets `_unavailable`
+       rather than leaving the encoder in a permanent `is_warming` state.
+
+Plus: every warmup attempt writes one line to `~/.aether/encoder_warmup.log`
+so a future hang is debuggable in seconds without re-instrumenting.
 """
 
 from __future__ import annotations
 
+import os as _os
 from typing import Any, Dict, List, Optional
 
 
+# F#8 defense layer 1: silence HuggingFace before any HF import happens.
+# `setdefault` so user env wins if they want progress output for debugging.
+_os.environ.setdefault("TRANSFORMERS_VERBOSITY", "error")
+_os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+_os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
+
+
 DEFAULT_EMBED_MODEL = "sentence-transformers/all-MiniLM-L6-v2"
+
+
+def _log_warmup(line: str) -> None:
+    """Append a single diagnostic line to ~/.aether/encoder_warmup.log.
+
+    Best-effort; never raises. Used so future warmup hangs are debuggable
+    by `cat ~/.aether/encoder_warmup.log` rather than re-instrumenting.
+    """
+    try:
+        from pathlib import Path
+        import time
+        log = Path.home() / ".aether" / "encoder_warmup.log"
+        log.parent.mkdir(parents=True, exist_ok=True)
+        with log.open("a", encoding="utf-8") as f:
+            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')}  {line}\n")
+    except Exception:
+        pass
 
 
 # Process-wide model cache. Shared across all LazyEncoder instances so
@@ -89,6 +133,13 @@ class LazyEncoder:
         Uses the process-wide cache so multiple LazyEncoder instances for
         the same model share one load. The lock serializes first-load
         attempts to avoid duplicate torch imports.
+
+        F#8 (v0.12.6): wraps the SentenceTransformer construction in a
+        stdout/stderr redirect so any HuggingFace / torch / tqdm output
+        is captured to buffers rather than dumped to the parent process's
+        pipe (which would corrupt the MCP wire protocol). The except is
+        widened to BaseException so any failure flips `_unavailable`
+        instead of leaving the warmup thread in a half-state forever.
         """
         if self._model is not None or self._unavailable:
             return
@@ -97,18 +148,43 @@ class LazyEncoder:
             self._model = cached
             return
         lock = _get_cache_lock()
+        _log_warmup(f"load_attempt model={self.model_name}")
         with lock:
             cached = _MODEL_CACHE.get(self.model_name)
             if cached is not None:
                 self._model = cached
+                _log_warmup("load_cache_hit")
                 return
             try:
-                from sentence_transformers import SentenceTransformer
-                model = SentenceTransformer(self.model_name)
+                # F#8 defense layer 2: capture stdout/stderr so any
+                # remaining HF/torch/tqdm output doesn't pollute the
+                # MCP stdio wire protocol. We discard the captured
+                # output — diagnostic lines go to encoder_warmup.log
+                # instead.
+                import contextlib
+                import io
+                stdout_buf = io.StringIO()
+                stderr_buf = io.StringIO()
+                with contextlib.redirect_stdout(stdout_buf), \
+                     contextlib.redirect_stderr(stderr_buf):
+                    from sentence_transformers import SentenceTransformer
+                    model = SentenceTransformer(self.model_name)
                 _MODEL_CACHE[self.model_name] = model
                 self._model = model
-            except Exception:
+                _log_warmup(
+                    f"load_ok captured_stdout_bytes={len(stdout_buf.getvalue())} "
+                    f"captured_stderr_bytes={len(stderr_buf.getvalue())}"
+                )
+            except BaseException as e:
+                # F#8 defense layer 3: BaseException catches everything.
+                # Without this, an interpreter-level failure during
+                # SentenceTransformer init left the encoder in a permanent
+                # `is_warming=True` state with no error path.
                 self._unavailable = True
+                _log_warmup(
+                    f"load_failed type={type(e).__name__} "
+                    f"msg={str(e)[:300]}"
+                )
 
     def start_warmup(self) -> None:
         """Kick off background model load. Idempotent; returns instantly."""
@@ -124,9 +200,14 @@ class LazyEncoder:
             )
             t.start()
             self._warmup_thread = t
-        except Exception:
+            _log_warmup("warmup_thread_started")
+        except BaseException as e:
             # Threading failure: degrade gracefully without blocking.
             self._unavailable = True
+            _log_warmup(
+                f"warmup_thread_failed type={type(e).__name__} "
+                f"msg={str(e)[:200]}"
+            )
 
     def wait_until_ready(self, timeout: float = 60.0) -> bool:
         """Block until the encoder is loaded or unavailable.

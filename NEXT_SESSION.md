@@ -41,6 +41,40 @@ The substrate is now **structurally complete** for in-session use:
 
 The remaining gap is **richness, not architecture**. With 41 memories the substrate can't ground much; the value compounds at 1000+. The fix for that is just time + sessions — which the auto-ingest hook now does for free as long as you're working.
 
+### Update 2026-04-30 evening — substrate now at 127 memories
+
+**One-time import from AI_round2 production substrate landed.** Pulled
+from `D:/AI_round2/personal_agent/crt_facts.db` + `crt_episodic.db`:
+- 46 unique slot/value beliefs deduped from 324 fact rows
+- 4 active user preferences
+- 17 concept entities (people, orgs, projects)
+- 15 top behavioral patterns
+
+OSS substrate: 45 → 127 nodes. Native = 45, imported = 82. Backups
+written before each touch (`mcp_state.pre_ai_round2_import_*`,
+`mcp_state.pre_embed_repair_*`, `mcp_state.pre_underscore_fix_*`).
+
+**Slot-equality scan over the merged substrate revealed real
+contradictions** — the v0.12 detector's first encounter with production
+data:
+
+| Slot | Distinct values | Notable |
+|---|---|---|
+| `user.occupation` | 15 | Mix of LLM hallucinations (`stocking`, `filmmaker`, `research engineer`) + user-trolling (`dork`, `fucking dork`) + truth (`freelance dev, sole crt builder`, `web developer`) |
+| `entity.organization` | 10 | Includes garbage extractions (`like`, `both`, `myself`) — entity_extraction needs cleanup |
+| `user.favorite_color` | 9 | All distinct (blue/brown/cyan/green/magenta/orange/purple/red/yellow). Most user_stated trust 0.95 — real evolution, not error |
+| `user.name` | 9 | Nick (truth) + Nick Block + LLM hallucinations (Aether, Claude, Jake, Marcus, October Baby, Turbo, World) |
+| `user.employer` | 6 | Amazon, Anthropic, CRT/Aether, Google, "left:a design studio", Walmart |
+| `user.location` | 4 | Milwaukee + Seattle + Portland — multi-residence reality |
+| `entity.person` | 4 | Includes garbage (`at`, `just`) |
+| `entity.project` | 3 | All garbage extractions ("project this/new/approach") |
+| `user.age` | 2 | 34 and 4 — clear LLM hallucination |
+
+This is the v0.12 slot-equality detector's strongest empirical
+demonstration to date. All these conflicts are *latent* in the
+substrate; running the detector against the merged state surfaces them
+as actionable.
+
 OSS remains the main focus. Today's marathon proves the substrate-assisted dev loop is real: every shipped release was validated by Aether's own tools (sanction APPROVE for cleanup, search for prior context, fidelity for grounding, doctor for health). The README's "I built a substrate that caught itself shipping bugs" thesis got 5 fresh data points today.
 
 ## What we're working on next
@@ -65,8 +99,15 @@ Per prior handoffs: 4 tests — N>1 user, cross-vendor, fresh-session-no-context
 
 Production CRT layers have `user.name` slots; OSS extractor returns empty for "My name is Nick" / "I am Nick" patterns. Adding a name pattern bank (~30 lines) closes the gap and lets the slot-equality detector catch the canonical Nick<>Aether case the v0.12 audit cited.
 
+## Open findings
+
+- **F#8 (FIXED v0.12.6):** `_LazyEncoder` warmup thread silently hung in MCP-subprocess context. Root cause confirmed via diagnostic logging: `SentenceTransformer.__init__` writes ~350 bytes of warnings/progress to stderr, which corrupted the parent's MCP stdio stream and stalled the warmup thread on a backed-up pipe write. Three-layer fix: (1) HF env vars at module load (TRANSFORMERS_VERBOSITY=error, HF_HUB_DISABLE_PROGRESS_BARS=1, TOKENIZERS_PARALLELISM=false), (2) `contextlib.redirect_stdout/stderr` around the SentenceTransformer construction, (3) widened except to BaseException so any future failure flips `_unavailable` instead of leaving the encoder in a permanent `is_warming` state. Plus diagnostic log to `~/.aether/encoder_warmup.log` so any future hang is debuggable in seconds. Two new regression tests in `test_v126_encoder_warmup_in_subprocess.py`.
+- **F#9 (open, low-priority once F#8 lands in production):** in cold/substring search mode, results that tie on substring score are sorted by creation time, not by trust. Concretely: after correcting `user.age` from 34→31, the truth (trust=0.95) ranked third behind two demoted-to-trust=0 entries because they were imported earlier. Two related issues: (a) `state.py:search` doesn't tiebreak by trust when scores are equal, and (b) `inject_substrate_context.py` filters by score >= 0.15 but not by trust, so trust=0 entries can still get into the LLM's prompt. Both are ~5 line fixes. **F#8 is upstream of F#9** — once cosine search works, ties become rare because embedding similarities differentiate "User age: 31" vs "user age: 34" by tiny vector deltas, and trust naturally weights into the score function.
+
 ## Other parking-lot items
 
+- **Resolve the imported slot conflicts.** The 9 distinct `user.favorite_color` values, 15 occupations, etc. are now in the substrate as live slot-tagged memories. A pass through `aether_resolve` (or batch via `aether_correct` to demote LLM-stated low-trust ones) cleans up the production noise that was inherited. Could also be the validation-chapter material — substrate doesn't just store contradictions, it *resolves* them.
+- **Entity-extraction cleanup.** The imported `entity.person` slot has `at` and `just` as values; `entity.project` has all garbage; `entity.organization` has `like`/`both`/`myself`. The original CRT entity extraction needs a quality pass before any future merge. Could be filtered out post-hoc with a stop-word list.
 - **Backport audit to main repo** (`D:/AI_round2/personal_agent/`). Probably has the same slot-equality + local-context blind spots OSS just fixed. ~2-3 hours mechanical port.
 - **Cascade complexity paper to arxiv** (drafted in `papers/cascade_complexity/`).
 - **Blog post:** *"I built a substrate that caught itself shipping bugs"* — today's 5-release marathon is the new climax (was 38-hour story).
