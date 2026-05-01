@@ -8,7 +8,7 @@ A long working session on aether-core. This log captures the arc so future-me (o
 |---|---|---|
 | v0.12.19 | `5999ac0` | Three doctor/policy/version-drift fixes (carrier of `72cb562`) |
 | v0.12.20 | `4c65887` | extract_facts clause-trim + question-skip (carrier of `c60052a`) |
-| v0.12.21 | (pending — Tier 1 patches in this log) | Polarity guards in `_is_asymmetric_negation_contradict` + `compute_grounding`, verb-stem check before verb-anchored grounding |
+| v0.12.21 | `7e7c417` (committed locally; **not pushed**) | Polarity guards in `_is_asymmetric_negation_contradict` + `compute_grounding`. Patch C (verb-stem) subsumed by Patch B's content-overlap gate. |
 
 GitHub master and the v0.12.19 / v0.12.20 tags are pushed. PyPI was deferred — `dist/aether_core-0.12.20.{whl,tar.gz}` are built and `twine check` clean under `dist/`.
 
@@ -89,7 +89,7 @@ The pattern: maturation preserved scaffolding (graph, types, governance shell, M
 
 ## The plan ranked by what "working" means
 
-- **Tier 1 (1–2 days, ships in v0.12.21):** three polarity/verb-stem patches in `_is_asymmetric_negation_contradict`, `compute_grounding`, and the verb-anchored grounding scorer. Neutralizes Tests #1 and #4's worst cases, partially addresses #4's order-sensitivity by making detector branches symmetric. **This is what we're doing in this session.**
+- **Tier 1 (SHIPPED as v0.12.21 — `7e7c417`):** polarity guards in `_is_asymmetric_negation_contradict` (cue-list cleanup, similarity threshold raised to 0.75, co-rejection guard) and `compute_grounding` (polarity-flip guard with content-token-overlap floor at 0.25). Patch C subsumed by Patch B. Bench post-patch: sanction harness 15/15, DECISIONS.md ingest 17→3 false positives (the 3 remaining are `flag_for_review` from the structural tension meter — different code path). 22 regression tests in `tests/test_v1221_polarity_and_overlap.py`. Full suite: 508 pass, 1 unrelated pre-existing HF-network failure.
 - **Tier 2 (2–4 weeks):** slot canonicalization. Extract `(slot_key, typed_value)` from each fact, conflict on slot_key match. Real fix to Tests #3 and #5/#6/#7/#8 from `project_aether_open_items.md`. Promotes "aether catches paraphrased contradictions" from aspiration to verifiable claim. Tonight's bench data becomes the corpus.
 - **Tier 3 (each ~1–2 weeks, port from GroundCheck):** disclosure policy + yellow-zone, volatility-triggered reflection, CRT-as-critic post-generation loop, commitments type.
 - **Tier 4 (months, paper-and-lab arc):** splats with Σ + Bhattacharyya, context-dependent covariance, multi-turn stance-flip detection (GroundCheck data: 93% of flips span 3+ turns), Contextual disposition restoration.
@@ -106,12 +106,29 @@ A future bench session should exercise these.
 
 ## Local environment as of session end
 
-- Repo: `/Users/nickblock/Documents/ai_round2/aether-core`, master at `4c65887` (or whatever Tier 1 lands as).
-- Venv: `~/.aether-venv/`, editable install of the repo, `aether.__version__ == "0.12.21"` (or whatever Tier 1 ships as).
+- Repo: `/Users/nickblock/Documents/ai_round2/aether-core`, master at `7e7c417` (v0.12.21 commit, **not pushed yet**).
+- Venv: `~/.aether-venv/`, editable install of the repo, `aether.__version__ == "0.12.21"`.
 - Substrate: `~/.aether/mcp_state.json`, 7 default policy beliefs, Belnap=`T` for all, 0 contradiction edges. Pre-cleanup corrupt copy at `~/.aether/mcp_state.before-cleanup.json`.
 - Plugin cache: `~/.claude/plugins/cache/aether/aether-core/0.12.18/` is the directory loaded by Claude Code's MCP server in this session, but execution routes through `aether_launcher.py` to the venv install. `marketplace.json` has `autoUpdate: true`, so v0.12.20+ should propagate to user plugin caches on next session start.
-- Tests: 12 new in `tests/test_extractor_clause_and_question.py` (v0.12.20). Tier 1 will add more in `tests/test_v1221_polarity_and_verbstem.py`.
-- Distros built: `dist/aether_core-0.12.20.{whl,tar.gz}` — twine check clean, upload deferred.
+- Tests: 12 new in `tests/test_extractor_clause_and_question.py` (v0.12.20), 22 new in `tests/test_v1221_polarity_and_overlap.py` (v0.12.21).
+- Distros built: `dist/aether_core-0.12.20.{whl,tar.gz}` — twine check clean, upload deferred. v0.12.21 distro not yet built; rebuild before any PyPI upload so the upload reflects the latest patches.
+
+## Known un-handled cases (out of Tier 1 scope, into Tier 2 territory)
+
+These surfaced in tonight's bench and are deliberately NOT fixed by v0.12.21. Tier 2 (slot canonicalization) is the architectural fix.
+
+- **Paraphrase blindness in the shape detector** (Test #3 Case A): `"vector dimension is 768"` vs `"uses 384-dim embeddings"` — same slot, different value, different carrier sentences → 0 contradictions detected.
+- **Categorical slot conflict requires explicit `slot=value` syntax** (Test #3 Case B): Option A vs Option B in prose form is invisible.
+- **`flag_for_review` on principle pairs**: `"prefers reversible"` vs `"prefers shipping"` (and the other principle-pair combos) flag from the structural tension meter at disposition `resolvable`. Different code path from the asymm_neg detector. Likely needs the same polarity-symmetry shape applied to whatever the tension meter is doing.
+- **Order independence on principle pairs**: forward seeding flags 3 pairs, reverse flags 3 pairs, but the *which* pairs differ — meter's evaluation is path-sensitive.
+- **The "uses A" vs "did not pick B" co-policy case across paraphrases**: "uses FAISS" + "did not pick Pinecone" still trips asymm_neg at sim ≥ 0.75 because only ONE side has selection-rejection language. Co-rejection guard requires BOTH sides. Real fix needs entity awareness — knowing FAISS and Pinecone are co-options in a closed set. Slot canonicalization territory.
+
+## Decision points still pending
+
+1. **Push v0.12.21 to GitHub.** Tag `v0.12.21` is local only as of this writeup. `git push origin master && git push origin v0.12.21` when Nick is ready. Marketplace `autoUpdate` will then propagate.
+2. **PyPI upload.** Distros for v0.12.20 are built but unuploaded. v0.12.21 needs `python -m build && twine check && twine upload dist/aether_core-0.12.21.*`. Use `! ~/.aether-venv/bin/twine upload dist/aether_core-0.12.21.*` so the token stays out of the assistant's context.
+3. **Tier 2 timing.** Slot canonicalization is the architectural fix to the paraphrase-blindness class. Real work — set aside a sprint, not a session.
+4. **Aether-core scope.** Stays a substrate library (Tier 2 only) or absorbs more of GroundCheck's surface area (disclosure policy, volatility, CRT-as-critic, commitments)? Defer until after Tier 2.
 
 ## Where Nick wants this to go
 
