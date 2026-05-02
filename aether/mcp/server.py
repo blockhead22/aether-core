@@ -719,6 +719,86 @@ def build_server(store: Optional[StateStore] = None) -> FastMCP:
         return sub.stats()
 
     @mcp.tool()
+    def aether_substrate_predict_contradictions(
+        steps_ahead: int = 3,
+        min_current_cosine: float = 0.3,
+        require_converging: bool = True,
+        same_namespace: bool = True,
+        signal: str = "cosine",
+        limit: int = 20,
+    ) -> dict:
+        """Predict slot pairs that are heading toward contradiction.
+
+        Builds a Gaussian splat per slot from observation history, then
+        extrapolates the trajectory N steps ahead. Pairs whose center
+        cosine is rising are flagged as future-conflict candidates.
+
+        Signals:
+        - 'cosine' (default, robust in 384D): tracks center-cosine velocity
+        - 'overlap' (Bhattacharyya): degenerates to ~0 in high-dim, kept
+          for diagnostic / low-dim use only
+
+        Returns empty list and 'encoder_unavailable=True' if the
+        sentence-transformer encoder hasn't loaded yet.
+        """
+        from aether.predictive.substrate_adapter import SubstrateSplatOverlay
+
+        sub = _get_substrate()
+        overlay = SubstrateSplatOverlay(sub)
+        splats = overlay.build(wait_for_encoder=False)
+        if not splats:
+            return {
+                "encoder_unavailable": overlay._unavailable,
+                "encoder_loaded": overlay.encoder.is_loaded,
+                "encoder_warming": overlay.encoder.is_warming,
+                "splats_built": 0,
+                "predictions": [],
+            }
+
+        preds = overlay.predict_pairwise_contradictions(
+            steps_ahead=steps_ahead,
+            min_current_cosine=min_current_cosine,
+            require_converging=require_converging,
+            same_namespace=same_namespace,
+            signal=signal,
+        )
+        return {
+            "encoder_loaded": True,
+            "splats_built": len(splats),
+            "pairs_analyzed": len(preds) if not require_converging else None,
+            "converging_count": sum(1 for p in preds if p.converging),
+            "predictions": [p.to_dict() for p in preds[:limit]],
+        }
+
+    @mcp.tool()
+    def aether_substrate_velocity_report() -> dict:
+        """Per-slot covariance velocity (urgency signal).
+
+        Positive velocity = belief under pressure (covariance widening).
+        Negative = belief settling. Requires the encoder to be loaded
+        and at least 2 states per slot with distinct timestamps.
+        """
+        from aether.predictive.substrate_adapter import SubstrateSplatOverlay
+
+        sub = _get_substrate()
+        overlay = SubstrateSplatOverlay(sub)
+        splats = overlay.build(wait_for_encoder=False)
+        if not splats:
+            return {
+                "encoder_loaded": overlay.encoder.is_loaded,
+                "splats_built": 0,
+                "rows": [],
+            }
+        return {
+            "encoder_loaded": True,
+            "splats_built": len(splats),
+            "rows": [
+                {"slot_id": slot_id, "velocity": vel}
+                for slot_id, vel in overlay.velocity_report()
+            ],
+        }
+
+    @mcp.tool()
     def aether_bootstrap() -> dict:
         """Idempotent first-run setup for clients without SessionStart hooks
         (Claude Desktop, Cursor, anything that's not Claude Code).
