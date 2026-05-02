@@ -771,6 +771,60 @@ def build_server(store: Optional[StateStore] = None) -> FastMCP:
         }
 
     @mcp.tool()
+    def aether_substrate_topology(
+        distance_fn: str = "cosine",
+        namespace: str = "",
+        betti_filtration: float = 0.35,
+    ) -> dict:
+        """Compute persistent homology over substrate slot-splats.
+
+        Returns Betti numbers (b0=connected components, b1=loops/holes),
+        persistence stats, and a human-readable interpretation.
+
+        distance_fn: 'cosine' (default) or 'confidence_weighted'
+        namespace: '' for all, or 'user'/'code'/'session'/'project'/'meta'
+        betti_filtration: distance scale at which to read Betti numbers
+
+        Returns encoder_loaded=False if the encoder hasn't warmed yet.
+        """
+        from aether.topology.substrate_adapter import compute_substrate_topology
+
+        sub = _get_substrate()
+        return compute_substrate_topology(
+            sub,
+            distance_fn=distance_fn,
+            namespace=namespace or None,
+            betti_filtration=betti_filtration,
+            wait_for_encoder=False,
+        )
+
+    @mcp.tool()
+    def aether_substrate_topology_evolution(
+        distance_fn: str = "cosine",
+        namespace: str = "",
+        betti_filtration: float = 0.35,
+        max_snapshots: int = 30,
+    ) -> dict:
+        """Walk substrate observations chronologically; snapshot topology
+        at each step. Returns Betti trajectories + restructuring events
+        (Betti number changes between consecutive snapshots).
+
+        Use this to identify when the user's belief topology shifted.
+        Substrate states with shared timestamps (e.g. bulk migration)
+        will collapse to a single jump rather than a gradual change.
+        """
+        from aether.topology.substrate_adapter import compute_substrate_topology_evolution
+
+        sub = _get_substrate()
+        return compute_substrate_topology_evolution(
+            sub,
+            distance_fn=distance_fn,
+            namespace=namespace or None,
+            betti_filtration=betti_filtration,
+            max_snapshots=max_snapshots,
+        )
+
+    @mcp.tool()
     def aether_substrate_velocity_report() -> dict:
         """Per-slot covariance velocity (urgency signal).
 
