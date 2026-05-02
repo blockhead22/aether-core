@@ -33,11 +33,44 @@ from typing import Optional
 
 from mcp.server.fastmcp import FastMCP
 
+from pathlib import Path
+
 from aether.governance import GovernanceTier
 from aether.governance.gap_auditor import ResponseAudit
 from aether.memory import extract_fact_slots, ingest_turn
+from aether.substrate import SubstrateGraph
 
 from .state import StateStore, SENTINEL_BELIEF_CONF
+
+
+_SUBSTRATE_SINGLETON: Optional[SubstrateGraph] = None
+
+
+def _get_substrate() -> SubstrateGraph:
+    """Lazy-load the substrate from ~/.aether/substrate.json on first use."""
+    global _SUBSTRATE_SINGLETON
+    if _SUBSTRATE_SINGLETON is None:
+        sub = SubstrateGraph()
+        path = str(Path.home() / ".aether" / "substrate.json")
+        sub.load(path)
+        _SUBSTRATE_SINGLETON = sub
+    return _SUBSTRATE_SINGLETON
+
+
+def _state_to_dict(s) -> dict:
+    """Slim SlotState dict (omit verbose internals for MCP transport)."""
+    return {
+        "state_id": s.state_id,
+        "slot_id": s.slot_id,
+        "value": s.value,
+        "normalized": s.normalized,
+        "trust": s.trust,
+        "observed_at": s.observed_at,
+        "observation_id": s.observation_id,
+        "temporal_status": s.temporal_status,
+        "source": s.source,
+        "superseded_by": s.superseded_by,
+    }
 
 
 def build_server(store: Optional[StateStore] = None) -> FastMCP:
@@ -568,6 +601,122 @@ def build_server(store: Optional[StateStore] = None) -> FastMCP:
     def aether_context() -> dict:
         """Dashboard snapshot of the current substrate state."""
         return store.stats()
+
+    # ==================================================================
+    # Substrate v0.14 — slot-first primitive
+    # ==================================================================
+
+    @mcp.tool()
+    def aether_substrate_observe(
+        namespace: str,
+        slot_name: str,
+        value: str,
+        source_text: str = "",
+        trust: float = 0.7,
+        source: str = "manual",
+    ) -> dict:
+        """Record a (namespace, slot_name) = value observation in the substrate.
+
+        Namespaces: 'user', 'code', 'session', 'project', 'meta'.
+
+        If a prior state existed for this slot with a different value, the
+        prior state is auto-superseded and a SUPERSEDES edge is added.
+        Same-value re-observations are recorded as continued affirmation
+        (history grows, no supersession).
+
+        Persists to ~/.aether/substrate.json after the write.
+        """
+        sub = _get_substrate()
+        state = sub.observe(
+            namespace=namespace,
+            slot_name=slot_name,
+            value=value,
+            source_text=source_text or value,
+            source_type=source,
+            trust=trust,
+        )
+        sub.save()
+        return {"state": _state_to_dict(state), "slot_id": state.slot_id}
+
+    @mcp.tool()
+    def aether_substrate_current(namespace: str, slot_name: str) -> dict:
+        """Most recent non-superseded state for a slot, or null."""
+        sub = _get_substrate()
+        s = sub.current_state(namespace, slot_name)
+        return {"state": _state_to_dict(s) if s else None}
+
+    @mcp.tool()
+    def aether_substrate_history(
+        namespace: str,
+        slot_name: str,
+        limit: int = 50,
+    ) -> dict:
+        """All observed states for a slot, oldest-first. Useful for tracing
+        how a belief evolved (e.g. user:location across moves)."""
+        sub = _get_substrate()
+        history = sub.history(namespace, slot_name)
+        return {
+            "slot_id": f"{namespace}:{slot_name}",
+            "count": len(history),
+            "states": [_state_to_dict(s) for s in history[-limit:]],
+        }
+
+    @mcp.tool()
+    def aether_substrate_contradictions(
+        namespace: str = "",
+        threshold: float = 0.5,
+        limit: int = 50,
+    ) -> dict:
+        """Find contradicting slot states across the substrate.
+
+        Uses NLI cross-encoder when AETHER_NLI_CONTRADICTION=1 is set
+        (paraphrase-aware), else falls back to normalized-value mismatch.
+
+        Returns pairs ordered by contradiction score descending.
+        """
+        sub = _get_substrate()
+        ns = namespace if namespace else None
+        pairs = sub.find_contradictions(namespace=ns, threshold=threshold)
+        return {
+            "count": len(pairs),
+            "pairs": [
+                {
+                    "score": score,
+                    "slot_id": a.slot_id,
+                    "a": _state_to_dict(a),
+                    "b": _state_to_dict(b),
+                }
+                for a, b, score in pairs[:limit]
+            ],
+        }
+
+    @mcp.tool()
+    def aether_substrate_slots(namespace: str = "") -> dict:
+        """List all slots, optionally filtered by namespace."""
+        sub = _get_substrate()
+        if namespace:
+            slots = sub.slots_in_namespace(namespace)
+        else:
+            slots = list(sub.slots.values())
+        return {
+            "count": len(slots),
+            "slots": [
+                {
+                    "slot_id": s.slot_id,
+                    "namespace": s.namespace,
+                    "slot_name": s.slot_name,
+                    "created_at": s.created_at,
+                    "state_count": len(sub._states_by_slot.get(s.slot_id, [])),
+                }
+                for s in slots
+            ],
+        }
+
+    @mcp.tool()
+    def aether_substrate_stats() -> dict:
+        """Substrate-wide stats: slots, states, observations, edges, namespace breakdown."""
+        sub = _get_substrate()
+        return sub.stats()
 
     @mcp.tool()
     def aether_bootstrap() -> dict:
