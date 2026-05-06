@@ -120,8 +120,26 @@ def build_server(store: Optional[StateStore] = None) -> FastMCP:
         all-MiniLM-L6-v2) when available, falling back to substring +
         token overlap when not. Each result includes both the combined
         score and the raw similarity.
+
+        When ``AETHER_CRT_INTEGRATION`` is set to ``read`` or ``full``,
+        results are merged with matches from the configured CRT facts
+        store. CRT-origin entries carry ``crt_origin: True`` and a
+        ``source`` prefixed with ``crt:`` so callers can distinguish
+        them.
         """
         results = store.search(query, limit=limit)
+
+        # Integration merge: CRT read mode (C1)
+        try:
+            from aether.integrations import crt as _crt
+            crt_results = _crt.search(query, limit=limit)
+        except Exception:
+            crt_results = []
+        if crt_results:
+            merged = list(results) + crt_results
+            merged.sort(key=lambda r: -float(r.get("score", 0.0)))
+            results = merged[:limit]
+
         return {
             "query": query,
             "result_count": len(results),

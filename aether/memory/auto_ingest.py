@@ -58,6 +58,11 @@ def _autoingest_disabled() -> bool:
     return os.environ.get("AETHER_DISABLE_AUTOINGEST", "").strip().lower() in _TRUTHY
 
 
+def _llm_extract_enabled() -> bool:
+    """True when AETHER_LLM_EXTRACT is set truthy (hybrid fallback gate)."""
+    return os.environ.get("AETHER_LLM_EXTRACT", "").strip().lower() in _TRUTHY
+
+
 # ---------------------------------------------------------------------------
 # Secret redaction
 # ---------------------------------------------------------------------------
@@ -408,6 +413,12 @@ def extract_facts(
                     raw_match=m.group(0),
                 ))
 
+    # LLM fallback when regex returned nothing on a substantial turn.
+    # Gated by AETHER_LLM_EXTRACT=1; see _llm_fallback_facts.
+    if not found and _llm_extract_enabled():
+        combined = "\n".join(p for p in (user_message, assistant_response) if p)
+        found.extend(_llm_fallback_facts(combined))
+
     # Deduplicate within the call (same text, keep highest trust)
     by_text: dict[str, CandidateFact] = {}
     for f in found:
@@ -419,6 +430,157 @@ def extract_facts(
     deduped = list(by_text.values())
     deduped.sort(key=lambda c: -c.trust)
     return deduped[:max_facts]
+
+
+# ---------------------------------------------------------------------------
+# LLM fallback (opt-in, off by default)
+# ---------------------------------------------------------------------------
+#
+# When the regex rules above return zero facts on a long turn, the
+# bench shows we miss the great majority of actual personal facts in
+# real conversational data (94.92% zero-slot floor on 26k GPT-export
+# user turns). The slot-first extractor in `aether.memory.llm_extract`
+# fills that gap with a local Ollama call and structured JSON output.
+#
+# We only call it when:
+#   - AETHER_LLM_EXTRACT is set truthy
+#   - the regex pass returned zero candidates
+#   - the combined turn length is >= AETHER_LLM_FALLBACK_MIN_CHARS (80)
+#
+# Each ExtractedFact returned by the LLM is translated into a
+# CandidateFact so the rest of the pipeline (dedup, store.add_memory)
+# is unchanged. Failures return [] — never raises.
+
+_LLM_TRUST = 0.85           # below regex constraint (0.92) and correction (0.93)
+                            # because the LLM is opt-in and unverified;
+                            # matches confidence in `_to_extracted_fact`.
+_LLM_FALLBACK_DEFAULT = 80  # matches extract_fact_slots_hybrid default
+
+
+def _llm_fallback_facts(combined_text: str) -> List[CandidateFact]:
+    """Run the LLM slot extractor, return CandidateFacts.
+
+    Returns [] on any failure (no Ollama, malformed output, network
+    error, timeout). The caller's hot path must not depend on this
+    succeeding.
+    """
+    if not _llm_extract_enabled():
+        return []
+    if not combined_text or not combined_text.strip():
+        return []
+    threshold = int(os.environ.get("AETHER_LLM_FALLBACK_MIN_CHARS", _LLM_FALLBACK_DEFAULT))
+    if len(combined_text) < threshold:
+        return []
+    try:
+        from aether.memory.llm_extract import extract_fact_slots_llm
+    except ImportError:
+        return []
+    try:
+        slots = extract_fact_slots_llm(combined_text) or {}
+    except Exception:
+        return []
+    out: List[CandidateFact] = []
+    for slot_name, fact in slots.items():
+        value = (fact.value or "").strip()
+        if not value or _looks_like_garbage(value):
+            continue
+        text = f"User {slot_name}: {value}"
+        out.append(CandidateFact(
+            text=text,
+            trust=_LLM_TRUST,
+            source="llm_slot_extraction",
+            signal=f"llm_slot:{slot_name}",
+            raw_match=value,
+        ))
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Substrate dual-write (opt-in via AETHER_SUBSTRATE_WRITE)
+# ---------------------------------------------------------------------------
+#
+# v0.14 introduced SubstrateGraph (slot-first primitive) but auto-ingest
+# still writes only to the legacy v0.13 MemoryGraph. This helper adds a
+# parallel write path: when AETHER_SUBSTRATE_WRITE=1, every slot fact
+# extracted from the turn (via extract_fact_slots_hybrid — regex first,
+# LLM fallback when AETHER_LLM_EXTRACT=1) is also recorded as a
+# SlotState observation in ~/.aether/substrate.json.
+#
+# Best-effort: any failure logs but never raises. The MemoryGraph
+# write path is untouched.
+
+def _substrate_write_enabled() -> bool:
+    """True when AETHER_SUBSTRATE_WRITE is set truthy."""
+    return os.environ.get("AETHER_SUBSTRATE_WRITE", "").strip().lower() in _TRUTHY
+
+
+def _write_slots_to_substrate(
+    user_message: Optional[str],
+    assistant_response: Optional[str],
+) -> List[dict]:
+    """Extract slot facts from the turn and observe them on the live substrate.
+
+    Returns one dict per slot observation written (slot, value, trust).
+    Returns [] on any failure or when the feature is disabled.
+    """
+    if not _substrate_write_enabled():
+        return []
+    text = "\n".join(p for p in (user_message, assistant_response) if p)
+    if not text or not text.strip():
+        return []
+    try:
+        from aether.memory.llm_extract import extract_fact_slots_hybrid
+        from aether.substrate import SubstrateGraph
+    except ImportError:
+        return []
+    try:
+        slots = extract_fact_slots_hybrid(text) or {}
+    except Exception:
+        return []
+    if not slots:
+        return []
+    try:
+        sub = SubstrateGraph()
+        # Default load path resolves to ~/.aether/substrate.json. If the
+        # file doesn't exist (fresh substrate), load() handles that
+        # gracefully — we still get an empty graph to write into.
+        try:
+            sub.load()
+        except Exception:
+            pass
+        written: List[dict] = []
+        for slot_name, fact in slots.items():
+            value = (fact.value or "").strip()
+            if not value or _looks_like_garbage(value):
+                continue
+            try:
+                state = sub.observe(
+                    namespace="user",
+                    slot_name=slot_name,
+                    value=value,
+                    source_text=text[:500],
+                    source_type="auto_ingest",
+                    trust=float(getattr(fact, "confidence", 0.85)),
+                    temporal_status=getattr(fact, "temporal_status", "active"),
+                    normalized=getattr(fact, "normalized", None),
+                    source="auto_ingest",
+                )
+                written.append({
+                    "slot": slot_name,
+                    "value": value,
+                    "trust": state.trust,
+                    "state_id": state.state_id,
+                })
+            except Exception:
+                continue
+        if written:
+            try:
+                sub.save()
+            except Exception:
+                return []
+        return written
+    except Exception:
+        return []
 
 
 def _rebuild_for_signal(label: str, snippet: str) -> str:
@@ -477,4 +639,16 @@ def ingest_turn(
         )
         result["signal"] = c.signal
         writes.append(result)
+
+    # Parallel substrate write (additive, opt-in via AETHER_SUBSTRATE_WRITE).
+    # MemoryGraph write path above is unchanged; this surfaces slot facts
+    # to the v0.14 SubstrateGraph so it gets populated by the live loop.
+    substrate_writes = _write_slots_to_substrate(user_message, assistant_response)
+    for sw in substrate_writes:
+        writes.append({
+            "memory_id": sw["state_id"],
+            "trust": sw["trust"],
+            "signal": f"substrate:{sw['slot']}",
+            "substrate": True,
+        })
     return writes
