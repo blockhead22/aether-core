@@ -657,6 +657,39 @@ def is_question(text: str) -> bool:
     ))
 
 
+_MENTION_FRAME_RX = re.compile(
+    r"\b(said|says|told|wrote|writes|reads?|claim(?:s|ed)?|"
+    r"example|string|quote|line|sentence|phrase|message|"
+    r"consider|imagine|suppose|assume|"
+    r"the\s+(?:fact|claim|example|string|quote|line|message|phrase))\b",
+    re.IGNORECASE,
+)
+# Matches paired quotes: ASCII " '  and curly U+2018 U+2019 U+201C U+201D
+_QUOTE_CHARS = "\"‘’“”'"
+_QUOTED_RX = re.compile(
+    r"[" + _QUOTE_CHARS + r"]([^" + _QUOTE_CHARS + r"]{2,200}?)[" + _QUOTE_CHARS + r"]"
+)
+
+
+def _strip_quoted_mentions(text: str) -> str:
+    """Replace quoted substrings with spaces when preceded by a mention frame.
+
+    A "mention frame" is a phrase like ``the example fact was``, ``he said``,
+    ``consider the claim``, ``the string``, etc. — a marker that whatever
+    follows in quotes is being *mentioned*, not asserted.
+
+    Returning a sanitized string lets the downstream regex extractors run
+    unchanged. Length is preserved (we replace with spaces) so any later
+    offset math stays consistent.
+    """
+    def _replace(m: re.Match) -> str:
+        prefix = text[: m.start()][-40:].lower()
+        if _MENTION_FRAME_RX.search(prefix):
+            return " " * (m.end() - m.start())
+        return m.group(0)
+    return _QUOTED_RX.sub(_replace, text)
+
+
 def extract_fact_slots(text: str) -> Dict[str, ExtractedFact]:
     """
     Extract a small set of personal-profile fact slots from free text.
@@ -668,6 +701,13 @@ def extract_fact_slots(text: str) -> Dict[str, ExtractedFact]:
 
     if not text or not text.strip():
         return facts
+
+    # Quote/mention guard: if the text mentions (rather than asserts) a fact —
+    # e.g. ``the example fact was "I work at Google"`` or
+    # ``He said "my name is Alice"`` — strip the quoted content so the
+    # downstream extractors can't pick it up as an active claim.
+    # Surfaced by the 2026-05-01 Mac eval against a 130-turn ChatGPT thread.
+    text = _strip_quoted_mentions(text)
 
     # Structured facts/preferences (useful for onboarding and explicit corrections).
     # Examples:
